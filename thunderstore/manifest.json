@@ -1,0 +1,9 @@
+{
+  "name": "RevivalRevived",
+  "version_number": "0.1.0",
+  "website_url": "https://github.com/andres-valdes/revival-revived",
+  "description": "A Valheim mod built with BepInEx and HarmonyX.",
+  "dependencies": [
+    "denikson-BepInExPack_Valheim-5.4.2202"
+  ]
+}
