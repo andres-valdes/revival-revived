@@ -23,13 +23,18 @@ public class Revivable : MonoBehaviour {
     private void Update() {
         if (m_nview == null || !m_nview.IsValid()) return;
 
-        // Check if revive window expired (only the owner checks)
-        if (m_nview.IsOwner()) {
-            if (DownedState.IsReviveWindowExpired(m_player!)) {
-                DownedState.ExpireDownedState(m_player!);
-                Destroy(this);
-                return;
-            }
+        // Check if revive window expired (only the owner checks).
+        //
+        // We do NOT clear the downed state here. Expiry-to-death is owned by the
+        // CheckDeath patch, which (while the player is downed and the window has
+        // expired) clears the downed state and lets vanilla OnDeath fire in the
+        // same tick. If we cleared downed here instead, CheckDeath would see an
+        // un-downed player still at <=0 HP and immediately re-enter the downed
+        // state -- an endless down/expire loop. Forcing health to 0 guarantees
+        // CheckDeath runs even if the downed player's health drifted upward.
+        if (m_nview.IsOwner() && DownedState.IsReviveWindowExpired(m_player!)) {
+            if (m_player!.GetHealth() > 0f) m_player.SetHealth(0f);
+            return;
         }
 
         // Decay hold timer if nobody is actively interacting this frame

@@ -253,12 +253,24 @@ public class E2ERunner : MonoBehaviour {
         // same player object, which exercises DownedState.Revive end to end.)
         DownedState.Revive(player, player);
 
+        // Let the revive settle: Object.Destroy(Revivable) is deferred to the
+        // end of the frame, and the body/collider re-enable needs a physics tick.
         yield return new WaitForSeconds(0.5f);
+
+        // Poll CanMove for a few seconds; the animator may need a frame or two
+        // to leave whatever state it was in while the visual was disabled.
+        bool canMove = false;
+        float waitMove = 0f;
+        while (waitMove < 3f) {
+            canMove = player.CanMove();
+            if (canMove) break;
+            waitMove += Time.deltaTime;
+            yield return null;
+        }
 
         bool notDowned = !DownedState.IsDowned(player);
         bool revivableGone = player.GetComponent<Revivable>() == null;
         bool healthy = player.GetHealth() > 0f;
-        bool canMove = player.CanMove();
         bool visualBack = player.m_visual != null && player.m_visual.activeSelf;
         bool collider = player.m_collider != null && player.m_collider.enabled;
         bool notKinematic = player.m_body != null && !player.m_body.isKinematic;
