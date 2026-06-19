@@ -23,6 +23,11 @@ static class RagdollStartPatch {
         // Cancel the TTL self-destruct (we manage lifetime)
         __instance.CancelInvoke("DestroyNow");
 
+        // Server-authoritative, network-lerped position sync across clients.
+        if (__instance.GetComponent<RagdollSync>() == null) {
+            __instance.gameObject.AddComponent<RagdollSync>();
+        }
+
         // Move colliders to a layer in the interact mask so hover raycast can hit them
         int characterLayer = LayerMask.NameToLayer("character");
         int count = 0;

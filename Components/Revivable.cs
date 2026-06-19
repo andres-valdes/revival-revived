@@ -3,17 +3,41 @@ using UnityEngine;
 namespace RevivalRevived.Components;
 
 /// <summary>
-/// Added to the Player GameObject when they enter the downed state.
-/// Owns the revive timer, expiry check, and state transitions.
+/// Revive controller present on a downed Player on <em>every</em> client.
+///
+/// Its lifecycle is driven entirely by the replicated <c>s_downed</c> ZDO flag:
+/// a LateUpdate patch attaches this component to any player the ZDO reports as
+/// downed (owner and remotes alike), and the component destroys itself once the
+/// ZDO reports the player is no longer downed. This keeps all revive logic
+/// compartmentalized in one place instead of split between RPC handlers.
+///
+/// Behaviour splits by ZDO ownership:
+///   - Owner: authoritative. Runs the revive timer, expiry check, writes
+///     progress to the ZDO, and performs the revive. Accepts channel input
+///     either locally (a co-located reviver) or via routed RPC from a remote
+///     reviver.
+///   - Remote: passive. <see cref="RequestRevive"/> forwards a channel RPC to
+///     the owner; nothing is mutated locally.
 /// </summary>
 public class Revivable : MonoBehaviour {
     private Player? m_player;
     private ZNetView? m_nview;
     private float m_holdTimer;
-    private Player? m_currentReviver;
+    private float m_lastChannelTime = -999f;
+    private long m_lastReviverId;
 
-    public string PlayerName => m_player?.GetPlayerName() ?? "Viking";
-    public float HoldTimer => m_holdTimer;
+    /// <summary>Max gap between channel messages before the reviver is considered to have stopped.</summary>
+    private const float ChannelTimeout = 0.4f;
+
+    public string PlayerName {
+        get {
+            if (m_player != null) return m_player.GetPlayerName();
+            return "Viking";
+        }
+    }
+
+    public float RemainingTime => m_player != null ? DownedState.GetRemainingTime(m_player) : 0f;
+    public float Progress => m_player != null ? DownedState.GetReviveProgress(m_player) : 0f;
 
     private void Awake() {
         m_player = GetComponent<Player>();
@@ -21,56 +45,64 @@ public class Revivable : MonoBehaviour {
     }
 
     private void Update() {
-        if (m_nview == null || !m_nview.IsValid()) return;
+        if (m_nview == null || !m_nview.IsValid() || m_player == null) return;
 
-        // Check if revive window expired (only the owner checks).
-        //
-        // We do NOT clear the downed state here. Expiry-to-death is owned by the
-        // CheckDeath patch, which (while the player is downed and the window has
-        // expired) clears the downed state and lets vanilla OnDeath fire in the
-        // same tick. If we cleared downed here instead, CheckDeath would see an
-        // un-downed player still at <=0 HP and immediately re-enter the downed
-        // state -- an endless down/expire loop. Forcing health to 0 guarantees
-        // CheckDeath runs even if the downed player's health drifted upward.
-        if (m_nview.IsOwner() && DownedState.IsReviveWindowExpired(m_player!)) {
-            if (m_player!.GetHealth() > 0f) m_player.SetHealth(0f);
+        // ZDO-driven lifecycle: if the player is no longer downed (revived or
+        // expired by the owner, replicated to us), tear ourselves down.
+        if (!DownedState.IsDowned(m_player)) {
+            Destroy(this);
             return;
         }
 
-        // Decay hold timer if nobody is actively interacting this frame
-        if (m_currentReviver != null) {
-            m_holdTimer -= Time.deltaTime * 2f;
-            if (m_holdTimer <= 0f) {
-                m_currentReviver = null;
-                m_holdTimer = 0f;
-            }
-        }
-    }
+        // Only the owner runs the authoritative timer/expiry/revive.
+        if (!m_nview.IsOwner()) return;
 
-    public float GetRemainingTime() {
-        if (m_nview == null || !m_nview.IsValid()) return 0f;
-        var downedTime = m_nview.GetZDO().GetFloat(DownedState.s_downedTime);
-        var now = (float)ZNet.instance.GetTimeSeconds();
-        return Mathf.Max(0f, DownedState.ReviveWindow - (now - downedTime));
+        // Expiry-to-death is owned by the CheckDeath patch: while the player is
+        // downed and the window has expired, CheckDeath clears downed and lets
+        // OnDeath fire. We just keep health at 0 so CheckDeath runs even if the
+        // downed player's health drifted upward.
+        if (DownedState.IsReviveWindowExpired(m_player)) {
+            if (m_player.GetHealth() > 0f) m_player.SetHealth(0f);
+            return;
+        }
+
+        bool channeling = Time.time - m_lastChannelTime < ChannelTimeout;
+        if (channeling) {
+            m_holdTimer += Time.deltaTime;
+        } else {
+            m_holdTimer = Mathf.Max(0f, m_holdTimer - Time.deltaTime * 2f);
+        }
+
+        // Publish progress for hover UI on every client.
+        m_nview.GetZDO().Set(DownedState.s_reviveProgress,
+            Mathf.Clamp01(m_holdTimer / DownedState.ReviveDuration));
+
+        if (m_holdTimer >= DownedState.ReviveDuration) {
+            DownedState.Revive(m_player, m_lastReviverId);
+            // Revive() destroys this component.
+        }
     }
 
     /// <summary>
-    /// Called by ReviveInteractable when a player holds interact on the ragdoll.
-    /// Returns true if the interaction was consumed.
+    /// Request a unit of revive "hold" from a reviver. Owner-local reviver feeds
+    /// the timer directly; a remote reviver routes a channel RPC to the owner.
+    /// Safe to call every frame while the reviver holds Use.
     /// </summary>
-    public bool TryRevive(Player reviver) {
-        if (m_player == null || reviver == m_player) return false;
-
-        m_currentReviver = reviver;
-        m_holdTimer += Time.deltaTime * 3f; // 3x because Update decays at 2x
-
-        if (m_holdTimer >= DownedState.ReviveDuration) {
-            DownedState.Revive(m_player, reviver);
-            m_holdTimer = 0f;
-            m_currentReviver = null;
-            Destroy(this);
+    public void RequestRevive(Player reviver) {
+        if (m_nview == null || !m_nview.IsValid()) return;
+        if (m_nview.IsOwner()) {
+            ChannelRevive(reviver.GetPlayerID());
+        } else {
+            m_nview.InvokeRPC(DownedState.RPC_Channel);
         }
+    }
 
-        return true;
+    /// <summary>
+    /// Feed the authoritative timer. Called on the owner -- either directly by a
+    /// co-located reviver or from the routed <see cref="DownedState.RPC_Channel"/> handler.
+    /// </summary>
+    public void ChannelRevive(long reviverId) {
+        m_lastReviverId = reviverId;
+        m_lastChannelTime = Time.time;
     }
 }

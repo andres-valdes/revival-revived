@@ -5,29 +5,42 @@ using UnityEngine;
 namespace RevivalRevived.Patches;
 
 /// <summary>
-/// Registers our custom RPCs on Player and prevents downed players
-/// from acting (moving, attacking, etc.).
+/// Registers our custom RPCs on Player and restores downed state on late join.
 /// </summary>
 [HarmonyPatch(typeof(Player), "Awake")]
 static class PlayerAwakePatch {
     static void Postfix(Player __instance) {
-        // Register RPCs for downed/revived visual sync
-        __instance.m_nview.Register("RevivalRevived_OnDowned", (long sender) => {
-            // Hide the player visual (same as vanilla RPC_OnDeath)
+        var nview = __instance.m_nview;
+
+        // Visual sync: hide/show the player model on every client.
+        nview.Register(DownedState.RPC_OnDowned, (long sender) => {
             __instance.m_visual.SetActive(false);
         });
-
-        __instance.m_nview.Register("RevivalRevived_OnRevived", (long sender) => {
-            // Restore the player visual
+        nview.Register(DownedState.RPC_OnRevived, (long sender) => {
             __instance.m_visual.SetActive(true);
         });
 
-        // Restore Revivable if this player was already downed (e.g. late join)
+        // Revive channel: routed to the owner of this player's ZDO. Feed the
+        // owner-authoritative Revivable.
+        nview.Register(DownedState.RPC_Channel, (long sender) => {
+            if (!nview.IsOwner()) return;
+            var rev = __instance.GetComponent<Revivable>();
+            if (rev == null && DownedState.IsDowned(__instance)) {
+                rev = __instance.gameObject.AddComponent<Revivable>();
+            }
+            rev?.ChannelRevive(sender);
+        });
+
+        // Late join / streamed-in-while-downed: reflect the replicated state.
         if (DownedState.IsDowned(__instance)) {
-            __instance.gameObject.AddComponent<Revivable>();
+            if (__instance.GetComponent<Revivable>() == null) {
+                __instance.gameObject.AddComponent<Revivable>();
+            }
             __instance.m_visual.SetActive(false);
-            __instance.m_collider.enabled = false;
-            __instance.m_body.isKinematic = true;
+            if (nview.IsOwner()) {
+                __instance.m_collider.enabled = false;
+                __instance.m_body.isKinematic = true;
+            }
         }
     }
 }
@@ -61,14 +74,29 @@ static class CharacterUpdateMotionPatch {
 }
 
 /// <summary>
-/// Sync downed player position to ragdoll in LateUpdate,
-/// after all physics and custom update systems have run.
-/// Also re-enforce collision disable each frame.
+/// Per-frame, ZDO-driven downed-state enforcement for every player instance
+/// (owner and remote). This is the single place that reconciles a player's
+/// local components/visual with the replicated <c>s_downed</c> flag:
+///   - attach a <see cref="Revivable"/> if the ZDO says downed and we lack one
+///     (the Revivable destroys itself once the ZDO says not-downed);
+///   - keep the model hidden on every client;
+///   - on the owner, keep the body frozen and pinned to the ragdoll.
 /// </summary>
 [HarmonyPatch(typeof(Player), "LateUpdate")]
 static class PlayerLateUpdatePatch {
     static void Postfix(Player __instance) {
-        if (DownedState.IsDowned(__instance)) {
+        if (!DownedState.IsDowned(__instance)) return;
+
+        if (__instance.GetComponent<Revivable>() == null) {
+            __instance.gameObject.AddComponent<Revivable>();
+        }
+
+        // Enforce hidden visual on all clients (robust against a missed RPC).
+        if (__instance.m_visual != null && __instance.m_visual.activeSelf) {
+            __instance.m_visual.SetActive(false);
+        }
+
+        if (__instance.m_nview != null && __instance.m_nview.IsValid() && __instance.m_nview.IsOwner()) {
             __instance.m_collider.enabled = false;
             __instance.m_body.isKinematic = true;
             DownedState.SyncPlayerToRagdoll(__instance);
@@ -91,19 +119,13 @@ static class PlayerUpdateHoverPatch {
 }
 
 /// <summary>
-/// Suppress the "you are dead" UI when actually just downed.
-/// Player.IsDead() returns s_dead from ZDO -- we don't set that,
-/// so it should return false. But if anything checks health <= 0
-/// to show death UI, this patch handles the HUD message.
+/// If a downed player somehow gets a respawn call, don't let vanilla respawn
+/// fire while downed.
 /// </summary>
 [HarmonyPatch(typeof(Player), "OnRespawn")]
 static class PlayerOnRespawnPatch {
-    /// <summary>
-    /// If a downed player somehow gets a respawn call, treat it as a revive instead.
-    /// </summary>
     static bool Prefix(Player __instance) {
         if (DownedState.IsDowned(__instance)) {
-            // Don't let vanilla respawn fire while downed
             return false;
         }
         return true;
