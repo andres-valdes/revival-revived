@@ -44,7 +44,7 @@ public class E2ERunner : MonoBehaviour {
     private void Start() => StartCoroutine(RunAll());
 
     private void Update() {
-        _elapsed += Time.deltaTime;
+        _elapsed += Time.unscaledDeltaTime;
         if (_elapsed > HardTimeoutSeconds && _started) {
             Log("E2E: HARD TIMEOUT reached, aborting");
             Finish(false, "hard-timeout");
@@ -82,7 +82,7 @@ public class E2ERunner : MonoBehaviour {
             int peers = ZNet.instance != null ? ZNet.instance.GetPeerConnections() : 0;
             int players = Player.GetAllPlayers().Count;
             if (peers >= 1 && players >= 2) break;
-            waited += Time.deltaTime;
+            waited += Time.unscaledDeltaTime;
             yield return null;
         }
         int peerCount = ZNet.instance != null ? ZNet.instance.GetPeerConnections() : 0;
@@ -92,11 +92,11 @@ public class E2ERunner : MonoBehaviour {
         if (!connected) yield break;
 
         // Give the client a moment to settle, then go down.
-        yield return new WaitForSeconds(2f);
+        yield return new WaitForSecondsRealtime(2f);
         Log("E2E[host]: downing self");
         player.SetHealth(0f);
         waited = 0f;
-        while (waited < 5f && !DownedState.IsDowned(player)) { waited += Time.deltaTime; yield return null; }
+        while (waited < 5f && !DownedState.IsDowned(player)) { waited += Time.unscaledDeltaTime; yield return null; }
         Record("host_downed", DownedState.IsDowned(player), $"downed={DownedState.IsDowned(player)} dead={player.IsDead()}");
         if (!DownedState.IsDowned(player)) yield break;
 
@@ -104,7 +104,7 @@ public class E2ERunner : MonoBehaviour {
         Log("E2E[host]: waiting to be revived by client...");
         waited = 0f;
         while (waited < 28f && DownedState.IsDowned(player) && !player.IsDead()) {
-            waited += Time.deltaTime;
+            waited += Time.unscaledDeltaTime;
             yield return null;
         }
         bool revived = !DownedState.IsDowned(player) && !player.IsDead() && player.GetHealth() > 0f;
@@ -112,7 +112,7 @@ public class E2ERunner : MonoBehaviour {
             $"downed={DownedState.IsDowned(player)} dead={player.IsDead()} hp={player.GetHealth():F0}");
 
         // Let the client finish its assertions before we quit.
-        yield return new WaitForSeconds(6f);
+        yield return new WaitForSecondsRealtime(6f);
     }
 
     // =====================================================================
@@ -129,7 +129,7 @@ public class E2ERunner : MonoBehaviour {
         // Confirm we see the remote host player.
         Log("E2E[client]: waiting to see the remote host player...");
         float waited = 0f;
-        while (waited < 60f && Player.GetAllPlayers().Count < 2) { waited += Time.deltaTime; yield return null; }
+        while (waited < 60f && Player.GetAllPlayers().Count < 2) { waited += Time.unscaledDeltaTime; yield return null; }
         bool sawRemote = Player.GetAllPlayers().Count >= 2;
         Record("client_sees_host", sawRemote, $"players={Player.GetAllPlayers().Count}");
         if (!sawRemote) yield break;
@@ -141,7 +141,7 @@ public class E2ERunner : MonoBehaviour {
         while (waited < 60f) {
             downed = FindDownedRemotePlayer(me);
             if (downed != null) break;
-            waited += Time.deltaTime;
+            waited += Time.unscaledDeltaTime;
             yield return null;
         }
         Record("client_detected_downed", downed != null,
@@ -161,10 +161,10 @@ public class E2ERunner : MonoBehaviour {
                 var interactable = ragdoll.GetComponentInChildren<ReviveInteractable>();
                 if (interactable != null) {
                     interactable.Interact(me, hold: true, alt: false);
-                    interactSeconds += Time.deltaTime;
+                    interactSeconds += Time.unscaledDeltaTime;
                 }
             }
-            waited += Time.deltaTime;
+            waited += Time.unscaledDeltaTime;
             yield return null;
         }
         bool revivedRemote = !DownedState.IsDowned(downed);
@@ -178,7 +178,7 @@ public class E2ERunner : MonoBehaviour {
         if (ragdoll == null) {
             // brief retry: the ragdoll ZDO may still be streaming in
             float w = 0f;
-            while (w < 5f && ragdoll == null) { ragdoll = FindLinkedRagdoll(downed); w += Time.deltaTime; yield return null; }
+            while (w < 5f && ragdoll == null) { ragdoll = FindLinkedRagdoll(downed); w += Time.unscaledDeltaTime; yield return null; }
         }
         if (ragdoll == null) { Record(T, false, "ragdoll not found on client"); yield break; }
 
@@ -197,7 +197,7 @@ public class E2ERunner : MonoBehaviour {
             maxFrameJump = Mathf.Max(maxFrameJump, Vector3.Distance(avg, prev));
             prev = avg;
             samples++;
-            t += Time.deltaTime;
+            t += Time.unscaledDeltaTime;
             yield return null;
         }
 
@@ -221,7 +221,7 @@ public class E2ERunner : MonoBehaviour {
         var player = Player.m_localPlayer;
         if (player == null) { Record("local_player", false, "no local player"); yield break; }
         Log($"E2E: local player ready: {player.GetPlayerName()} hp={player.GetHealth()}/{player.GetMaxHealth()}");
-        yield return new WaitForSeconds(2f);
+        yield return new WaitForSecondsRealtime(2f);
 
         yield return StartCoroutine(Test_LethalDamageDowns());
         yield return StartCoroutine(Test_DownedConstraints());
@@ -234,7 +234,7 @@ public class E2ERunner : MonoBehaviour {
         var player = Player.m_localPlayer;
         player.SetHealth(0f);
         float waited = 0f;
-        while (waited < 5f && !DownedState.IsDowned(player)) { waited += Time.deltaTime; yield return null; }
+        while (waited < 5f && !DownedState.IsDowned(player)) { waited += Time.unscaledDeltaTime; yield return null; }
         bool downed = DownedState.IsDowned(player);
         bool notDead = !player.IsDead();
         bool hasRevivable = player.GetComponent<Revivable>() != null;
@@ -271,11 +271,11 @@ public class E2ERunner : MonoBehaviour {
         var ragdollBefore = FindLinkedRagdoll(player);
 
         DownedState.Revive(player);
-        yield return new WaitForSeconds(0.5f);
+        yield return new WaitForSecondsRealtime(0.5f);
 
         bool canMove = false;
         float waitMove = 0f;
-        while (waitMove < 3f) { canMove = player.CanMove(); if (canMove) break; waitMove += Time.deltaTime; yield return null; }
+        while (waitMove < 3f) { canMove = player.CanMove(); if (canMove) break; waitMove += Time.unscaledDeltaTime; yield return null; }
 
         bool notDowned = !DownedState.IsDowned(player);
         bool revivableGone = player.GetComponent<Revivable>() == null;
@@ -283,7 +283,7 @@ public class E2ERunner : MonoBehaviour {
         bool visualBack = player.m_visual != null && player.m_visual.activeSelf;
         bool collider = player.m_collider != null && player.m_collider.enabled;
         bool notKinematic = player.m_body != null && !player.m_body.isKinematic;
-        yield return new WaitForSeconds(0.5f);
+        yield return new WaitForSecondsRealtime(0.5f);
         bool ragdollGone = ragdollBefore == null || !ragdollBefore;
 
         Record(T, notDowned && revivableGone && healthy && canMove && visualBack && collider && notKinematic && ragdollGone,
@@ -299,12 +299,12 @@ public class E2ERunner : MonoBehaviour {
         yield return null;
         player.SetHealth(0f);
         float waited = 0f;
-        while (waited < 5f && !DownedState.IsDowned(player)) { waited += Time.deltaTime; yield return null; }
+        while (waited < 5f && !DownedState.IsDowned(player)) { waited += Time.unscaledDeltaTime; yield return null; }
         if (!DownedState.IsDowned(player)) { Record(T, false, "could not re-down"); yield break; }
         var zdo = player.m_nview.GetZDO();
         zdo.Set(DownedState.s_downedTime, (float)ZNet.instance.GetTimeSeconds() - DownedState.ReviveWindow - 5f);
         waited = 0f;
-        while (waited < 10f && !player.IsDead()) { player.SetHealth(0f); waited += Time.deltaTime; yield return null; }
+        while (waited < 10f && !player.IsDead()) { player.SetHealth(0f); waited += Time.unscaledDeltaTime; yield return null; }
         Record(T, player.IsDead() && !DownedState.IsDowned(player),
             $"dead={player.IsDead()} notDowned={!DownedState.IsDowned(player)}");
     }
@@ -316,13 +316,13 @@ public class E2ERunner : MonoBehaviour {
         Log("E2E: waiting for FejdStartup (main menu)...");
         float waited = 0f;
         while (FejdStartup.instance == null && Game.instance == null) {
-            waited += Time.deltaTime;
+            waited += Time.unscaledDeltaTime;
             if (waited > 120f) { Log("E2E: FejdStartup never appeared"); yield break; }
             yield return null;
         }
         if (Game.instance != null) { Log("E2E: Game already running"); yield break; }
 
-        yield return new WaitForSeconds(3f);
+        yield return new WaitForSecondsRealtime(3f);
         if (_worldStartIssued) yield break;
         _worldStartIssued = true;
 
@@ -389,7 +389,7 @@ public class E2ERunner : MonoBehaviour {
                 yield return null;
                 yield break;
             }
-            waited += Time.deltaTime;
+            waited += Time.unscaledDeltaTime;
             if (waited > 240f) { Log("E2E: timed out waiting for player spawn"); yield break; }
             yield return null;
         }
@@ -435,9 +435,9 @@ public class E2ERunner : MonoBehaviour {
     }
 
     private IEnumerator QuitSoon() {
-        yield return new WaitForSeconds(1f);
+        yield return new WaitForSecondsRealtime(1f);
         Application.Quit();
-        yield return new WaitForSeconds(2f);
+        yield return new WaitForSecondsRealtime(2f);
         System.Diagnostics.Process.GetCurrentProcess().Kill();
     }
 }
