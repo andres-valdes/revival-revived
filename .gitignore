@@ -1,7 +1,10 @@
-bin/
+bin/Debug/
+bin/Release/
 obj/
 *.user
 *.suo
 .vs/
 .decompiled/
 *.DotSettings.user
+.claude/settings.local.json
+.claude/scheduled_tasks.lock

@@ -19,6 +19,11 @@ public class Plugin : BaseUnityPlugin {
         Logger.LogInfo($"{PluginName} v{PluginVersion} loaded!");
 
         _harmony = Harmony.CreateAndPatchAll(typeof(Plugin).Assembly, PluginGuid);
+
+        // Autonomous end-to-end test harness (opt-in via RR_E2E=1).
+        if (System.Environment.GetEnvironmentVariable("RR_E2E") == "1") {
+            E2E.E2ERunner.Bootstrap();
+        }
     }
 
     private void OnDestroy() {
