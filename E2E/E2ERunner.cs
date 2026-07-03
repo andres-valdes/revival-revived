@@ -18,7 +18,7 @@ namespace RevivalRevived.E2E;
 ///   host     multiplayer host: opens a CustomSocket world, downs itself, waits
 ///            to be revived by a connecting client.
 ///   client   multiplayer client: joins the host, detects the downed remote
-///            player, validates the replicated marker, and revives them.
+///            player, validates ragdoll position sync, and revives them.
 ///
 /// Bounded by a hard timeout so it can never hang a CI job.
 /// </summary>
@@ -104,6 +104,13 @@ public class E2ERunner : MonoBehaviour {
             yield break;
         }
 
+        // Vanish scenario: the roles invert -- the CLIENT downs itself and logs
+        // out while WE are mid-channel reviving it.
+        if (E2EConfig.IsVanishScenario) {
+            yield return StartCoroutine(RunHostVanish(player));
+            yield break;
+        }
+
         // Give the client a moment to settle, then go down.
         yield return new WaitForSecondsRealtime(2f);
         Log("E2E[host]: downing self");
@@ -134,6 +141,86 @@ public class E2ERunner : MonoBehaviour {
         yield return new WaitForSecondsRealtime(6f);
     }
 
+    /// <summary>
+    /// Vanish scenario, host side: channel a revive on the downed client and
+    /// keep holding while the client logs out. The channel must fizzle cleanly:
+    /// progress decays to zero, nothing throws, no revive fires, the orphan
+    /// marker persists (it is the reconnect-death evidence), and its hover text
+    /// explains the disconnect.
+    /// </summary>
+    private IEnumerator RunHostVanish(Player me) {
+        // Wait for the client to go down.
+        Log("E2E[host]: vanish scenario -- waiting for client to be downed...");
+        Player? downed = null;
+        float w = 0f;
+        while (w < 60f) {
+            downed = FindDownedRemotePlayer(me);
+            if (downed != null) break;
+            w += Time.unscaledDeltaTime;
+            yield return null;
+        }
+        Record("vanish_client_downed", downed != null, downed != null ? $"name={downed.GetPlayerName()}" : "none");
+        if (downed == null) yield break;
+        long downedPid = downed.GetPlayerID();
+        yield return new WaitForSecondsRealtime(1f);
+
+        // Channel and KEEP channeling while the client vanishes mid-hold. The
+        // client leaves once it sees our progress replicate (>0.25), so a revive
+        // must never complete.
+        Log("E2E[host]: channeling; client will log out mid-hold...");
+        float maxProg = 0f;
+        bool vanished = false, revived = false;
+        w = 0f;
+        while (w < 40f) {
+            // Vanished = instance destroyed OR its ZDO released (an invalid nview
+            // makes IsDowned() false and GetHealth() fall back to max, so those
+            // reads are only meaningful while the nview is valid).
+            if (downed == null || downed.m_nview == null || !downed.m_nview.IsValid()) { vanished = true; break; }
+            if (!downed.IsDowned() && downed.GetHealth() > 0f) { revived = true; break; }
+            // Direct interactable access: this scenario tests DISCONNECT
+            // semantics; hover-ray reachability is covered by client_marker_sync
+            // (and is terrain-dependent on the fresh world this scenario uses).
+            var interactable = FindMarkerInteractable(downed);
+            interactable?.Interact(me, hold: true, alt: false);
+            maxProg = Mathf.Max(maxProg, downed.GetReviveProgress());
+            w += Time.unscaledDeltaTime;
+            yield return null;
+        }
+        Record("vanish_mid_channel", vanished && !revived && maxProg > 0.1f,
+            $"vanished={vanished} revived={revived} maxProg={maxProg:F2}");
+        if (!vanished) yield break;
+
+        // Keep "holding" a moment longer against the orphan -- must not throw,
+        // must not revive anyone, and the local hold must decay to zero.
+        var orphan = DownedMarker.FindFor(downedPid);
+        var orphanInteractable = orphan != null ? orphan.GetComponentInChildren<ReviveInteractable>() : null;
+        w = 0f;
+        while (w < 1.5f) {
+            orphanInteractable?.Interact(me, hold: true, alt: false);
+            w += Time.unscaledDeltaTime;
+            yield return null;
+        }
+        yield return new WaitForSecondsRealtime(3f);
+
+        orphan = DownedMarker.FindFor(downedPid);
+        bool orphanPersists = orphan != null;
+        float residualProgress = 0f;
+        string hover = "";
+        if (orphan != null) {
+            var nv = orphan.GetComponent<ZNetView>();
+            residualProgress = nv != null && nv.IsValid() ? nv.GetZDO().GetFloat(DownedKeys.ReviveProgress) : 0f;
+            var inter = orphan.GetComponentInChildren<ReviveInteractable>();
+            hover = inter != null ? inter.GetHoverText() : "";
+        }
+        bool progressFizzled = residualProgress <= 0.01f;
+        bool hoverExplains = hover.IndexOf("disconnected", StringComparison.OrdinalIgnoreCase) >= 0;
+        bool onlyMe = Player.GetAllPlayers().Count == 1;
+
+        Record("vanish_channel_fizzles", orphanPersists && progressFizzled && hoverExplains && onlyMe,
+            $"orphanPersists={orphanPersists} residualProgress={residualProgress:F2} " +
+            $"hoverExplains={hoverExplains} hover=\"{hover.Replace("\n", " | ")}\" onlyMe={onlyMe}");
+    }
+
     // =====================================================================
     //  MULTIPLAYER: CLIENT (the reviver)
     // =====================================================================
@@ -155,6 +242,11 @@ public class E2ERunner : MonoBehaviour {
 
         if (E2EConfig.IsRejoinScenario) {
             yield return StartCoroutine(RunClientRejoin(me));
+            yield break;
+        }
+
+        if (E2EConfig.IsVanishScenario) {
+            yield return StartCoroutine(RunClientVanish(me));
             yield break;
         }
 
@@ -225,6 +317,39 @@ public class E2ERunner : MonoBehaviour {
         }
         Record("client_host_visible_after_revive", visibleAgain && solidAgain,
             $"visible={visibleAgain} colliderOn={solidAgain} after={vw:F1}s");
+    }
+
+    /// <summary>
+    /// Vanish scenario, client side: down self, wait until the HOST's channel
+    /// progress replicates in (proving it is mid-hold), then log out.
+    /// </summary>
+    private IEnumerator RunClientVanish(Player me) {
+        Log("E2E[client]: vanish scenario -- downing self");
+        me.SetHealth(0f);
+        float w = 0f;
+        while (w < 6f && !me.IsDowned()) { w += Time.unscaledDeltaTime; yield return null; }
+        if (!me.IsDowned()) { Record("vanish_pre_down", false, "could not down self"); yield break; }
+        Record("vanish_pre_down", true, "downed=True");
+
+        // Wait until the host is visibly mid-channel (replicated marker progress),
+        // then vanish while they are still holding.
+        Log("E2E[client]: waiting for host channel progress before logging out...");
+        w = 0f;
+        float seenProg = 0f;
+        while (w < 30f && me.IsDowned()) {
+            seenProg = Mathf.Max(seenProg, me.GetReviveProgress());
+            if (seenProg > 0.25f) break;
+            w += Time.unscaledDeltaTime;
+            yield return null;
+        }
+        Record("vanish_saw_host_channel", seenProg > 0.25f && me.IsDowned(), $"seenProg={seenProg:F2}");
+        if (seenProg <= 0.25f) yield break;
+
+        Log("E2E[client]: logging out mid-channel");
+        Game.instance.Logout(save: true, changeToStartScene: true);
+        w = 0f;
+        while (w < 60f && FejdStartup.instance == null) { w += Time.unscaledDeltaTime; yield return null; }
+        Record("vanish_logged_out", FejdStartup.instance != null, "back at menu");
     }
 
     /// <summary>
@@ -465,7 +590,7 @@ public class E2ERunner : MonoBehaviour {
         while (waited < 5f && !player.IsDowned()) { waited += Time.unscaledDeltaTime; yield return null; }
 
         // Drop-in pop: the marker is launched upward at spawn (sampled by
-        // DownedMarker at the moment the velocity is applied -- reading the
+        // DownedState at the moment the velocity is applied -- reading the
         // rigidbody here races against gravity).
         float popVelY = DownedMarker.LastPopVelY;
         bool popped = popVelY > 3f;
@@ -521,6 +646,66 @@ public class E2ERunner : MonoBehaviour {
         Record(T, startedGreen && progressed, $"blend0={blend0:F2} blend1={blend1:F2}");
     }
 
+    /// <summary>
+    /// Verifies "downed + disconnect = death" via the reconnect path, without a
+    /// full reconnect: down the player, then simulate the reconnected fresh
+    /// character (downed ZDO state gone, health clamped back to full by vanilla
+    /// Load) while the persistent green marker survives as an orphan. The
+    /// DisconnectDeathCheck should find the orphan and complete the death: real
+    /// tombstone spawned, green marker gone, player dead, no ragdoll.
+    /// </summary>
+    private IEnumerator Test_DisconnectDeath() {
+        const string T = "disconnect_kills_on_reconnect";
+        var player = Player.m_localPlayer;
+        player.SetHealth(player.GetMaxHealth());
+        GiveTestItem(player); // so the death grave has loot
+        yield return null;
+
+        // Down once -> green marker.
+        player.SetHealth(0f);
+        float w = 0f;
+        while (w < 5f && !player.IsDowned()) { w += Time.unscaledDeltaTime; yield return null; }
+        yield return new WaitForSecondsRealtime(0.5f);
+        var m1 = player.FindDownedMarker();
+        if (m1 == null) { Record(T, false, "no marker after down"); yield break; }
+
+        // Simulate reconnect: fresh character (no downed ZDO state, full health),
+        // orphan marker left behind.
+        var zdo = player.m_nview.GetZDO();
+        zdo.Set(DownedKeys.Downed, false);
+        zdo.Set(DownedKeys.MarkerZdoId, ZDOID.None);
+        var rev = player.GetComponent<Revivable>();
+        if (rev != null) UnityEngine.Object.Destroy(rev);
+        player.SetHealth(player.GetMaxHealth());
+        player.m_collider.enabled = true;
+        player.m_body.isKinematic = false;
+        if (player.m_visual != null) player.m_visual.SetActive(true);
+        yield return null;
+
+        // Run the reconnect check (as PlayerOnSpawnedPatch would).
+        player.gameObject.AddComponent<DisconnectDeathCheck>();
+
+        // Wait for it to find the orphan and kill the player.
+        w = 0f;
+        while (w < 8f && !player.IsDead()) { w += Time.unscaledDeltaTime; yield return null; }
+        yield return new WaitForSecondsRealtime(0.5f);
+
+        bool dead = player.IsDead();
+        bool markerGone = DownedMarker.FindFor(player.GetPlayerID()) == null;
+        bool realTombstone = false;
+        foreach (var t in UnityEngine.Object.FindObjectsOfType<TombStone>()) {
+            var nv = t.GetComponent<ZNetView>();
+            if (nv != null && nv.IsValid() && !nv.GetZDO().GetBool(DownedKeys.IsDownedMarker)) { realTombstone = true; break; }
+        }
+        bool noRagdolls = UnityEngine.Object.FindObjectsOfType<Ragdoll>().Length == 0;
+
+        Record(T, dead && markerGone && realTombstone && noRagdolls,
+            $"dead={dead} markerGone={markerGone} realTombstone={realTombstone} noRagdolls={noRagdolls}");
+
+        // Let the vanilla respawn restore the player for any following tests.
+        yield return new WaitForSecondsRealtime(0.5f);
+    }
+
     private IEnumerator Test_DownedConstraints() {
         const string T = "downed_constraints";
         var player = Player.m_localPlayer;
@@ -539,12 +724,13 @@ public class E2ERunner : MonoBehaviour {
             interactableFound = interactable != null;
             var dm = marker.GetComponent<DownedMarker>();
             green = dm != null && dm.IsGreen();
-            disabledFx = dm != null ? dm.DisabledEffects : 0;
+            disabledFx = DownedMarker.TemplateEffectsRemoved;
             stripped = marker.GetComponent<TombStone>() == null && marker.GetComponent<Container>() == null;
-            // Ember particles/glow must be OFF while revivable (they are the
-            // "truly dead" indicator, reserved for the real grave).
+            // The marker prefab simply HAS no ember/glow objects (deleted from
+            // the template at build time) -- they are the "truly dead" indicator,
+            // reserved for the real grave.
             noEmbers = disabledFx > 0
-                && marker.GetComponentsInChildren<ParticleSystem>(false).Length == 0;
+                && marker.GetComponentsInChildren<ParticleSystem>(true).Length == 0;
             if (interactable != null) {
                 var hover = interactable.GetHoverText();
                 hoverOk = !string.IsNullOrEmpty(hover) && hover.IndexOf("Revive", StringComparison.OrdinalIgnoreCase) >= 0;
@@ -664,66 +850,6 @@ public class E2ERunner : MonoBehaviour {
         Record(T, notDowned && revivableGone && healthy && canMove && visualBack && collider && notKinematic && markerGone,
             $"notDowned={notDowned} revivableGone={revivableGone} hp={player.GetHealth():F0} canMove={canMove} " +
             $"visualBack={visualBack} collider={collider} notKinematic={notKinematic} markerGone={markerGone}");
-    }
-
-    /// <summary>
-    /// Verifies "downed + disconnect = death" via the reconnect path, without a
-    /// full reconnect: down the player, then simulate the reconnected fresh
-    /// character (downed ZDO state gone, health clamped back to full by vanilla
-    /// Load) while the persistent green marker survives as an orphan. The
-    /// DisconnectDeathCheck should find the orphan and complete the death: real
-    /// tombstone spawned, green marker gone, player dead, no ragdoll.
-    /// </summary>
-    private IEnumerator Test_DisconnectDeath() {
-        const string T = "disconnect_kills_on_reconnect";
-        var player = Player.m_localPlayer;
-        player.SetHealth(player.GetMaxHealth());
-        GiveTestItem(player); // so the death grave has loot
-        yield return null;
-
-        // Down once -> green marker.
-        player.SetHealth(0f);
-        float w = 0f;
-        while (w < 5f && !player.IsDowned()) { w += Time.unscaledDeltaTime; yield return null; }
-        yield return new WaitForSecondsRealtime(0.5f);
-        var m1 = player.FindDownedMarker();
-        if (m1 == null) { Record(T, false, "no marker after down"); yield break; }
-
-        // Simulate reconnect: fresh character (no downed ZDO state, full health),
-        // orphan marker left behind.
-        var zdo = player.m_nview.GetZDO();
-        zdo.Set(DownedKeys.Downed, false);
-        zdo.Set(DownedKeys.MarkerZdoId, ZDOID.None);
-        var rev = player.GetComponent<Revivable>();
-        if (rev != null) UnityEngine.Object.Destroy(rev);
-        player.SetHealth(player.GetMaxHealth());
-        player.m_collider.enabled = true;
-        player.m_body.isKinematic = false;
-        if (player.m_visual != null) player.m_visual.SetActive(true);
-        yield return null;
-
-        // Run the reconnect check (as PlayerOnSpawnedPatch would).
-        player.gameObject.AddComponent<DisconnectDeathCheck>();
-
-        // Wait for it to find the orphan and kill the player.
-        w = 0f;
-        while (w < 8f && !player.IsDead()) { w += Time.unscaledDeltaTime; yield return null; }
-        yield return new WaitForSecondsRealtime(0.5f);
-
-        bool dead = player.IsDead();
-        bool markerGone = DownedMarker.FindFor(player.GetPlayerID()) == null;
-        bool realTombstone = false;
-        foreach (var t in UnityEngine.Object.FindObjectsOfType<TombStone>()) {
-            var nv = t.GetComponent<ZNetView>();
-            if (nv != null && nv.IsValid() && !nv.GetZDO().GetBool(DownedKeys.IsDownedMarker)) { realTombstone = true; break; }
-        }
-        bool noRagdolls = UnityEngine.Object.FindObjectsOfType<Ragdoll>().Length == 0;
-
-        Record(T, dead && markerGone && realTombstone && noRagdolls,
-            $"dead={dead} markerGone={markerGone} realTombstone={realTombstone} noRagdolls={noRagdolls}");
-
-        // Let the vanilla respawn restore the player for any following tests.
-        yield return new WaitForSecondsRealtime(0.5f);
     }
 
     private IEnumerator Test_ExpiryKills() {
@@ -894,12 +1020,6 @@ public class E2ERunner : MonoBehaviour {
     // =====================================================================
     //  Helpers
     // =====================================================================
-    /// <summary>Marker interactable for a downed player (single-process tests/demo).</summary>
-    private static ReviveInteractable? FindMarkerInteractable(Player downed) {
-        var marker = downed.FindDownedMarker();
-        return marker != null ? marker.GetComponentInChildren<ReviveInteractable>() : null;
-    }
-
     /// <summary>
     /// Locate the downed player's revive interactable the way the real game
     /// does: a raycast through Player.m_interactMask toward the marker, taking
@@ -915,6 +1035,12 @@ public class E2ERunner : MonoBehaviour {
         if (hits.Length == 0) return null;
         System.Array.Sort(hits, (a, b) => a.distance.CompareTo(b.distance));
         return hits[0].collider.GetComponentInParent<ReviveInteractable>();
+    }
+
+    /// <summary>Marker interactable for a downed player (single-process tests/demo).</summary>
+    private static ReviveInteractable? FindMarkerInteractable(Player downed) {
+        var marker = downed.FindDownedMarker();
+        return marker != null ? marker.GetComponentInChildren<ReviveInteractable>() : null;
     }
 
     private static Player? FindDownedRemotePlayer(Player me) {

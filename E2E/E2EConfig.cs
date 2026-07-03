@@ -19,9 +19,11 @@ public static class E2EConfig {
     public static bool IsHost => Role == "host";
     public static bool IsClient => Role == "client";
 
-    /// <summary>Multiplayer scenario: "revive" (default) or "rejoin".</summary>
+    /// <summary>Multiplayer scenario: "revive" (default), "rejoin", or "vanish".</summary>
     public static string Scenario => (Environment.GetEnvironmentVariable("RR_E2E_SCENARIO") ?? "revive").ToLowerInvariant();
     public static bool IsRejoinScenario => Scenario == "rejoin";
+    /// <summary>Client downs itself and logs out while the HOST is mid-channel reviving it.</summary>
+    public static bool IsVanishScenario => Scenario == "vanish";
 
     /// <summary>
     /// Manual play mode: use the harness only to auto-host/auto-join over the

@@ -41,8 +41,8 @@ public class DownedMarker : MonoBehaviour {
     public int TintedLights => m_lights.Count;
     public int TintedMaterials => m_tinted.Count;
 
-    /// <summary>Ember/glow effect objects disabled on this marker (test hook).</summary>
-    public int DisabledEffects { get; private set; }
+    /// <summary>Ember/glow objects deleted from the prefab template at build time (test hook).</summary>
+    public static int TemplateEffectsRemoved { get; private set; }
 
     /// <summary>0 = fully green (window fresh), 1 = original grave red (window elapsed). Test hook.</summary>
     public float CurrentBlend { get; private set; }
@@ -53,7 +53,6 @@ public class DownedMarker : MonoBehaviour {
 
     /// <summary>Upward launch velocity applied to the last spawned marker (test hook).</summary>
     public static float LastPopVelY { get; private set; }
-
 
     /// <summary>
     /// Spawn the green marker for a freshly-downed player (owner only) and
@@ -165,11 +164,16 @@ public class DownedMarker : MonoBehaviour {
             var template = Object.Instantiate(original, s_prefabHolder.transform);
             template.name = PrefabName;
 
-            // Strip the loot-grave behaviour (Awake never ran; safe to remove).
+            // Curate the template ONCE so the prefab contains exactly what the
+            // marker is -- instances never add or remove anything.
+            // (A fully from-scratch prefab would need an AssetBundle: the stone
+            // model, materials, collider and Floating tuning only exist in the
+            // vanilla prefab, so we derive and curate instead.)
             var tomb = template.GetComponent<TombStone>();
             if (tomb != null) Object.DestroyImmediate(tomb);
             var container = template.GetComponent<Container>();
             if (container != null) Object.DestroyImmediate(container);
+            RemoveGraveEffects(template);
 
             // Our behaviour, baked into the prefab.
             template.AddComponent<DownedMarker>();
@@ -202,12 +206,6 @@ public class DownedMarker : MonoBehaviour {
 
     private void Awake() {
         m_nview = GetComponent<ZNetView>();
-
-        // The grave's ember particles and glow flare only belong on a REAL
-        // (unrevivable) tombstone -- their absence marks this as revivable, and
-        // their presence on the replacing grave signals the window has closed.
-        DisableGraveEffects();
-
         CaptureAccents();
         ApplyBlend(0f);
     }
@@ -222,18 +220,25 @@ public class DownedMarker : MonoBehaviour {
         if (worldText != null) worldText.text = ownerName;
     }
 
-    /// <summary>Turn off ember particle systems and flare/glow children.</summary>
-    private void DisableGraveEffects() {
-        foreach (var ps in GetComponentsInChildren<ParticleSystem>(includeInactive: true)) {
-            ps.Stop(withChildren: true, ParticleSystemStopBehavior.StopEmittingAndClear);
-            ps.gameObject.SetActive(false);
-            DisabledEffects++;
+    /// <summary>
+    /// Delete ember particle systems and flare/glow children from the prefab
+    /// TEMPLATE. The grave effects belong only on a real (unrevivable) grave --
+    /// the marker prefab simply doesn't have them, so instances never need to
+    /// disable anything.
+    /// </summary>
+    private static void RemoveGraveEffects(GameObject template) {
+        foreach (var ps in template.GetComponentsInChildren<ParticleSystem>(includeInactive: true)) {
+            if (ps != null && ps.gameObject != template) {
+                Object.DestroyImmediate(ps.gameObject);
+                TemplateEffectsRemoved++;
+            }
         }
-        foreach (var t in GetComponentsInChildren<Transform>(includeInactive: true)) {
+        foreach (var t in template.GetComponentsInChildren<Transform>(includeInactive: true)) {
+            if (t == null || t.gameObject == template) continue;
             var n = t.name.ToLowerInvariant();
-            if ((n.Contains("flare") || n.Contains("glow")) && t.gameObject.activeSelf) {
-                t.gameObject.SetActive(false);
-                DisabledEffects++;
+            if (n.Contains("flare") || n.Contains("glow")) {
+                Object.DestroyImmediate(t.gameObject);
+                TemplateEffectsRemoved++;
             }
         }
     }

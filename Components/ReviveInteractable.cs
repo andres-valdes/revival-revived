@@ -91,9 +91,30 @@ public class ReviveInteractable : MonoBehaviour, Hoverable, Interactable {
         player.m_nview.InvokeRPC(DownedKeys.RpcDoRevive);
     }
 
+    /// <summary>
+    /// True when the linked player's session ZDO no longer exists at all --
+    /// they disconnected while downed. (Distinct from the ZDO existing but the
+    /// instance being unloaded by distance, which is not a disconnect.)
+    /// </summary>
+    private bool LinkedPlayerDisconnected() {
+        if (m_nview == null || !m_nview.IsValid()) return false;
+        var playerZdoId = m_nview.GetZDO().GetZDOID(DownedKeys.PlayerZdoId);
+        if (playerZdoId == ZDOID.None) return false;
+        return ZDOMan.instance.GetZDO(playerZdoId) == null;
+    }
+
     public string GetHoverText() {
         var player = FindDownedPlayer();
-        if (player == null) return "";
+        if (player == null) {
+            // The marker outlives a disconnecting owner (it is the evidence that
+            // kills them on reconnect); tell the would-be reviver why there is
+            // no revive prompt.
+            if (LinkedPlayerDisconnected()) {
+                var who = m_nview!.GetZDO().GetString(ZDOVars.s_ownerName, "Viking");
+                return Localization.instance.Localize($"{who} (disconnected)");
+            }
+            return "";
+        }
 
         var name = m_nview!.GetZDO().GetString(ZDOVars.s_ownerName, "Viking");
         var verb = Plugin.RevivePressMode ? "" : "Hold ";
@@ -103,9 +124,11 @@ public class ReviveInteractable : MonoBehaviour, Hoverable, Interactable {
     }
 
     public string GetHoverName() {
-        return FindDownedPlayer() != null
-            ? m_nview!.GetZDO().GetString(ZDOVars.s_ownerName, "Viking")
-            : "";
+        if (m_nview == null || !m_nview.IsValid()) return "";
+        if (FindDownedPlayer() != null || LinkedPlayerDisconnected()) {
+            return m_nview.GetZDO().GetString(ZDOVars.s_ownerName, "Viking");
+        }
+        return "";
     }
 
     public bool Interact(Humanoid user, bool hold, bool alt) {
