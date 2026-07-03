@@ -220,6 +220,31 @@ static class ZNetScene_Awake_Patch {
 }
 ```
 
+## Strongly-Typed ZDO Access: ZdoTyped (PREFER THIS)
+
+This workspace has a source generator for typed ZDO schemas: **`../zdo-typed`**
+(sibling repo, published at https://github.com/andres-valdes/zdo-typed). Read
+its `README.md` before writing raw `zdo.GetFloat(hash)`-style code -- new ZDO
+fields should be declared as schemas, not loose hash constants.
+
+```csharp
+[ZdoSchema("MyMod")]
+public partial struct MarkerZdo {
+    [ZdoField] public partial float ReviveProgress { get; set; }
+    [ZdoField(Name = "ownerName", NoPrefix = true)] public partial string OwnerName { get; set; }
+    [ZdoField] public partial ZDOID Player { get; set; }   // vanilla _u/_i pair
+}
+
+var view = m_nview.GetZdo<MarkerZdo>();          // typed view over the live ZDO
+view.ReviveProgress = 0.5f;                      // networked write, hash precomputed
+if (m_nview.TryGetZdo<MarkerZdo>(out var v)) ... // validity-guarded
+class Marker : ZdoComponent<MarkerZdo> { ... }   // attach-by-generic base
+```
+
+Keys hash via GetStableHashCode at COMPILE time (parity-tested against
+assembly_utils.dll); misuse is a compile error (ZDO001-ZDO006). RevivalRevived's
+`DownedPlayerZdo` and `DownedMarker.View` are the in-repo examples.
+
 ## Common Pitfalls
 
 - **Writing to ZDO you don't own:** Data won't sync properly. Always check `IsOwner()` or `ClaimOwnership()` first.

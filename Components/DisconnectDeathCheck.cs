@@ -1,5 +1,6 @@
 using System.Collections;
 using UnityEngine;
+using ZdoTyped;
 
 namespace RevivalRevived.Components;
 
@@ -57,8 +58,8 @@ public class DisconnectDeathCheck : MonoBehaviour {
     private static void KillDowned(Player player) {
         if (player == null || !player.m_nview.IsValid() || !player.m_nview.IsOwner()) return;
 
-        var zdo = player.m_nview.GetZDO();
-        zdo.Set(DownedKeys.Downed, false);
+        var zdo = player.m_nview.GetZdo<DownedPlayerZdo>();
+        zdo.Downed = false;
 
         // Remove any linked or orphaned marker; the real grave replaces it
         // in place (no second drop-in pop) via the replace fields on our own
@@ -70,10 +71,10 @@ public class DisconnectDeathCheck : MonoBehaviour {
                       : linked != null ? linked.transform.position
                       : (Vector3?)null;
         if (replaceAt != null) {
-            zdo.Set(DownedKeys.GraveReplacePending, true);
-            zdo.Set(DownedKeys.GraveReplacePos, replaceAt.Value);
+            zdo.GraveReplacePending = true;
+            zdo.GraveReplacePos = replaceAt.Value;
         }
-        DownedMarker.DestroyLinkedMarker(zdo);
+        DownedMarker.DestroyLinkedMarker(ref zdo);
         DownedMarker.DestroyMarker(orphan);
 
         var rev = player.GetComponent<Revivable>();

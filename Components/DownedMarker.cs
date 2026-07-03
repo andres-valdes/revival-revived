@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using UnityEngine;
+using ZdoTyped;
 
 namespace RevivalRevived.Components;
 
@@ -15,10 +16,36 @@ namespace RevivalRevived.Components;
 /// marker visually "becomes" a grave right as it converts to the real one.
 ///
 /// Conversion is idempotent and ZDO-driven: it runs on every client whose
-/// tombstone ZDO has <see cref="DownedKeys.IsDownedMarker"/> set (owner spawns
+/// tombstone ZDO has <see cref="View.IsDownedMarker"/> set (owner spawns
 /// it directly; remotes convert from a <c>TombStone.Start</c> postfix).
 /// </summary>
-public class DownedMarker : MonoBehaviour {
+public partial class DownedMarker : MonoBehaviour {
+    /// <summary>
+    /// Typed view over the marker's ZDO. Written by its single writer -- the
+    /// channeling reviver (progress) -- plus the immutable identity fields set
+    /// once at spawn. Key names preserve the established wire format.
+    /// </summary>
+    [ZdoTyped.ZdoSchema("RevivalRevived")]
+    public partial struct View {
+        /// <summary>Distinguishes the revive marker from a real loot grave.</summary>
+        [ZdoTyped.ZdoField(Name = "isDownedMarker")] public partial bool IsDownedMarker { get; set; }
+
+        /// <summary>Peer-authoritative channel progress 0-1, written by the reviving client.</summary>
+        [ZdoTyped.ZdoField(Name = "reviveProgress")] public partial float ReviveProgress { get; set; }
+
+        /// <summary>Stable PlayerID of the downed player (survives logout, unlike the character ZDOID).</summary>
+        [ZdoTyped.ZdoField(Name = "ownerPlayerID")] public partial long OwnerPlayerId { get; set; }
+
+        /// <summary>Spawn-time clock; gradient fallback when the player ZDO is gone.</summary>
+        [ZdoTyped.ZdoField(Name = "downedTime")] public partial float DownedTime { get; set; }
+
+        /// <summary>Cross-link back to the downed player's character ZDO.</summary>
+        [ZdoTyped.ZdoField(Name = "playerZDOID")] public partial ZDOID Player { get; set; }
+
+        /// <summary>Vanilla world-text key, shared with real graves.</summary>
+        [ZdoTyped.ZdoField(Name = "ownerName", NoPrefix = true)] public partial string OwnerName { get; set; }
+    }
+
     /// <summary>Revive-window accent colour at full time remaining.</summary>
     public static readonly Color ReviveGreen = new(0.25f, 1f, 0.35f);
 
@@ -73,16 +100,16 @@ public class DownedMarker : MonoBehaviour {
             return;
         }
 
-        var markerZdo = nview.GetZDO();
-        var playerZdo = player.m_nview.GetZDO();
+        var markerZdo = nview.GetZdo<View>();
+        var playerZdo = player.m_nview.GetZdo<DownedPlayerZdo>();
 
-        markerZdo.Set(DownedKeys.IsDownedMarker, true); // distinguishes from real graves
-        markerZdo.Set(DownedKeys.PlayerZdoId, playerZdo.m_uid);
-        markerZdo.Set(DownedKeys.OwnerPlayerID, player.GetPlayerID()); // stable across rejoin
-        markerZdo.Set(ZDOVars.s_ownerName, player.GetPlayerName());   // world text
-        markerZdo.Set(DownedKeys.DownedTime, (float)ZNet.instance.GetTimeSeconds()); // fallback clock
+        markerZdo.IsDownedMarker = true; // distinguishes from real graves
+        markerZdo.Player = player.m_nview.GetZDO().m_uid;
+        markerZdo.OwnerPlayerId = player.GetPlayerID(); // stable across rejoin
+        markerZdo.OwnerName = player.GetPlayerName();   // world text
+        markerZdo.DownedTime = (float)ZNet.instance.GetTimeSeconds(); // fallback clock
 
-        playerZdo.Set(DownedKeys.MarkerZdoId, markerZdo.m_uid);
+        playerZdo.Marker = nview.GetZDO().m_uid;
 
         // Vanilla tombstone "drop-in" pop (TombStone.Setup normally does this;
         // our marker has no TombStone script).
@@ -90,7 +117,7 @@ public class DownedMarker : MonoBehaviour {
         if (body != null) body.linearVelocity = new Vector3(0f, 5f, 0f);
         LastPopVelY = body != null ? body.linearVelocity.y : 0f;
 
-        Plugin.Logger.LogInfo($"Spawned downed marker for {player.GetPlayerName()}, ZDOID {markerZdo.m_uid}");
+        Plugin.Logger.LogInfo($"Spawned downed marker for {player.GetPlayerName()}, ZDOID {nview.GetZDO().m_uid}");
     }
 
     /// <summary>
@@ -102,17 +129,17 @@ public class DownedMarker : MonoBehaviour {
         foreach (var dm in Object.FindObjectsOfType<DownedMarker>()) {
             var nv = dm.GetComponent<ZNetView>();
             if (nv == null || !nv.IsValid()) continue;
-            if (nv.GetZDO().GetLong(DownedKeys.OwnerPlayerID, 0L) == playerId) return dm.gameObject;
+            if (nv.GetZdo<View>().OwnerPlayerId == playerId) return dm.gameObject;
         }
         return null;
     }
 
-    /// <summary>Destroy the marker linked from a player ZDO and clear the link.</summary>
-    public static void DestroyLinkedMarker(ZDO playerZdo) {
-        var markerId = playerZdo.GetZDOID(DownedKeys.MarkerZdoId);
+    /// <summary>Destroy the marker linked from a player's typed view and clear the link.</summary>
+    public static void DestroyLinkedMarker(ref DownedPlayerZdo playerZdo) {
+        var markerId = playerZdo.Marker;
         if (markerId == ZDOID.None) return;
 
-        playerZdo.Set(DownedKeys.MarkerZdoId, ZDOID.None);
+        playerZdo.Marker = ZDOID.None;
         DestroyMarker(ZNetScene.instance.FindInstance(markerId));
     }
 
@@ -213,8 +240,8 @@ public class DownedMarker : MonoBehaviour {
     private void Start() {
         // Show the downed player's name like a vanilla grave would (the ZDO is
         // populated by the time Start runs, on the spawner and on remotes).
-        if (m_nview == null || !m_nview.IsValid()) return;
-        var ownerName = m_nview.GetZDO().GetString(ZDOVars.s_ownerName);
+        if (!m_nview.TryGetZdo<View>(out var view)) return;
+        var ownerName = view.OwnerName;
         if (string.IsNullOrEmpty(ownerName)) return;
         var worldText = GetComponentInChildren<TMPro.TMP_Text>(true);
         if (worldText != null) worldText.text = ownerName;
@@ -302,12 +329,12 @@ public class DownedMarker : MonoBehaviour {
         // including the pause-while-channeling shift). The marker ZDO must have a
         // single writer -- the channeling reviver publishing progress -- so the
         // window clock cannot live here without ZDO revision fights.
-        var zdo = m_nview.GetZDO();
-        var playerZdoId = zdo.GetZDOID(DownedKeys.PlayerZdoId);
+        var view = m_nview.GetZdo<View>();
+        var playerZdoId = view.Player;
         var playerZdo = playerZdoId != ZDOID.None ? ZDOMan.instance.GetZDO(playerZdoId) : null;
         var downedTime = playerZdo != null
-            ? playerZdo.GetFloat(DownedKeys.DownedTime)
-            : zdo.GetFloat(DownedKeys.DownedTime); // fallback: spawn-time value
+            ? playerZdo.GetZdo<DownedPlayerZdo>().DownedTime
+            : view.DownedTime; // fallback: spawn-time value
         var elapsed = (float)ZNet.instance.GetTimeSeconds() - downedTime;
         ApplyBlend(Mathf.Clamp01(elapsed / Plugin.ReviveWindow));
     }

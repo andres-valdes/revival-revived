@@ -1,4 +1,5 @@
 using UnityEngine;
+using ZdoTyped;
 
 namespace RevivalRevived.Components;
 
@@ -92,8 +93,8 @@ public class Revivable : MonoBehaviour {
     /// player clock instead.
     /// </summary>
     private void PauseWindowClock(float dt) {
-        var zdo = m_nview!.GetZDO();
-        zdo.Set(DownedKeys.DownedTime, zdo.GetFloat(DownedKeys.DownedTime) + dt);
+        var zdo = m_nview!.GetZdo<DownedPlayerZdo>();
+        zdo.DownedTime += dt;
     }
 
     /// <summary>A reviver is holding the channel (routed ping from any client).</summary>

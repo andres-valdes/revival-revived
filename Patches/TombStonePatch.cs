@@ -1,6 +1,7 @@
 using HarmonyLib;
 using RevivalRevived.Components;
 using UnityEngine;
+using ZdoTyped;
 
 namespace RevivalRevived.Patches;
 
@@ -19,11 +20,11 @@ static class TombStoneSetupReplacePatch {
         if (player == null || player.m_nview == null || !player.m_nview.IsValid()) return;
         if (ownerUID != player.GetPlayerID()) return;
 
-        var zdo = player.m_nview.GetZDO();
-        if (!zdo.GetBool(DownedKeys.GraveReplacePending)) return;
-        zdo.Set(DownedKeys.GraveReplacePending, false); // consume
+        var zdo = player.m_nview.GetZdo<DownedPlayerZdo>();
+        if (!zdo.GraveReplacePending) return;
+        zdo.GraveReplacePending = false; // consume
 
-        var at = zdo.GetVec3(DownedKeys.GraveReplacePos, __instance.transform.position);
+        var at = zdo.GraveReplacePos;
         __instance.transform.position = at;
         var body = __instance.GetComponent<Rigidbody>();
         if (body != null) {
