@@ -58,6 +58,20 @@ public static class DownedState {
     /// <summary>Stable PlayerID of the downed player (survives logout/rejoin, unlike the character ZDOID).</summary>
     public static readonly int s_ownerPlayerID = "RevivalRevived_ownerPlayerID".GetStableHashCode();
 
+    /// <summary>Effect objects created by the last downed poof (test hook).</summary>
+    public static int LastPoofCount { get; private set; }
+
+    /// <summary>Upward launch velocity applied to the last spawned marker (test hook).</summary>
+    public static float LastMarkerPopVelY { get; private set; }
+
+    /// <summary>
+    /// When set, the next real (loot) tombstone spawned by vanilla death replaces
+    /// the removed green marker seamlessly: it appears at this position with no
+    /// drop-in pop (the pop already played when the marker spawned). Consumed by
+    /// the TombStone.Setup patch.
+    /// </summary>
+    public static Vector3? ReplaceGraveAt;
+
     // ZDOID pairs (long + uint), matching Valheim's convention.
     public static readonly KeyValuePair<int, int> s_markerZDOID = ZDO.GetHashZDOID("RevivalRevived_markerZDOID");
     public static readonly KeyValuePair<int, int> s_playerZDOID = ZDO.GetHashZDOID("RevivalRevived_playerZDOID");
@@ -70,6 +84,8 @@ public static class DownedState {
     public static void EnterDownedState(Player player) {
         var nview = player.m_nview;
         var zdo = nview.GetZDO();
+
+        ReplaceGraveAt = null; // stale replace-position must not affect this cycle
 
         // Mark downed on player ZDO (replicates to all clients)
         zdo.Set(s_downed, true);
@@ -125,11 +141,16 @@ public static class DownedState {
         zdo.Set(s_downed, false);
         zdo.Set(s_reviveProgress, 0f);
 
-        // Remove the green marker; vanilla OnDeath will spawn the real grave.
+        // Remove the green marker; vanilla OnDeath will spawn the real grave in
+        // its place (no second drop-in pop).
+        var linked = FindLinkedMarker(player);
+        if (linked != null) ReplaceGraveAt = linked.transform.position;
         DestroyLinkedMarker(zdo);
         // Also remove any orphaned marker for this player (disgraceful disconnect).
         // On reconnect the marker is owned by the server, so claim it first.
-        DestroyMarkerObject(FindMarkerForPlayer(player.GetPlayerID()));
+        var orphan = FindMarkerForPlayer(player.GetPlayerID());
+        if (orphan != null) ReplaceGraveAt = orphan.transform.position;
+        DestroyMarkerObject(orphan);
 
         var rev = player.GetComponent<Revivable>();
         if (rev != null) Object.Destroy(rev);
@@ -148,6 +169,67 @@ public static class DownedState {
         // Invoke vanilla death directly (spawns the real tombstone, sets s_dead).
         HarmonyLib.Traverse.Create(player).Method("OnDeath").GetValue();
         Plugin.Logger.LogInfo($"{player.GetPlayerName()} died from being downed at disconnect");
+    }
+
+    /// <summary>
+    /// Play the ragdoll-despawn "poof" (smoke/particles) at the downed spot on
+    /// this client. Sourced from an enemy ragdoll's remove-effect so it matches
+    /// the vanilla corpse-vanish effect. Runs from the OnDowned RPC on every
+    /// client. Returns the number of effect objects spawned.
+    /// </summary>
+    public static int PlayDownedPoof(Player player) {
+        var effect = FindRagdollRemoveEffect(player);
+        if (effect == null) { LastPoofCount = 0; return 0; }
+        var created = effect.Create(player.GetCenterPoint(), Quaternion.identity);
+        LastPoofCount = created?.Length ?? 0;
+        return LastPoofCount;
+    }
+
+    private static EffectList? s_cachedRemoveEffect;
+    private static bool s_removeEffectSearched;
+
+    /// <summary>Prefab the poof effect was sourced from (test hook).</summary>
+    public static string LastPoofSourceName { get; private set; } = "";
+
+    /// <summary>
+    /// The smoke/particle effect enemy ragdolls play when they despawn. The
+    /// player's own ragdoll has no remove-effect, so we borrow one. Prefer the
+    /// Greyling's -- it is appropriately small for a player-sized poof (the
+    /// generic scan can land on huge ones like the Abomination's).
+    /// </summary>
+    private static EffectList? FindRagdollRemoveEffect(Player player) {
+        if (s_removeEffectSearched) return s_cachedRemoveEffect;
+        if (ZNetScene.instance == null) return null; // try again once scene is ready
+        s_removeEffectSearched = true;
+
+        foreach (var name in new[] { "Greyling_ragdoll", "Greydwarf_ragdoll" }) {
+            var prefab = ZNetScene.instance.GetPrefab(name);
+            var ragdoll = prefab != null ? prefab.GetComponent<Ragdoll>() : null;
+            if (ragdoll != null && ragdoll.m_removeEffect != null
+                && ragdoll.m_removeEffect.m_effectPrefabs.Length > 0) {
+                s_cachedRemoveEffect = ragdoll.m_removeEffect;
+                LastPoofSourceName = prefab!.name;
+                Plugin.Logger.LogInfo($"Downed poof: using remove-effect from '{prefab.name}'");
+                return s_cachedRemoveEffect;
+            }
+        }
+
+        // Fallback: any ragdoll prefab with a remove-effect.
+        foreach (var prefab in ZNetScene.instance.m_prefabs) {
+            if (prefab == null) continue;
+            var ragdoll = prefab.GetComponent<Ragdoll>();
+            if (ragdoll != null && ragdoll.m_removeEffect != null
+                && ragdoll.m_removeEffect.m_effectPrefabs.Length > 0) {
+                s_cachedRemoveEffect = ragdoll.m_removeEffect;
+                LastPoofSourceName = prefab.name;
+                Plugin.Logger.LogInfo($"Downed poof: using remove-effect from '{prefab.name}' (fallback)");
+                break;
+            }
+        }
+        if (s_cachedRemoveEffect == null) {
+            Plugin.Logger.LogWarning("Downed poof: no ragdoll prefab with a remove-effect found");
+        }
+        return s_cachedRemoveEffect;
     }
 
     /// <summary>
@@ -216,7 +298,10 @@ public static class DownedState {
         var revivable = player.GetComponent<Revivable>();
         if (revivable != null) Object.Destroy(revivable);
 
-        // Destroy the linked marker (vanilla will spawn the real tombstone on death)
+        // Remove the green marker; vanilla OnDeath will spawn the real tombstone
+        // in its place (no second drop-in pop).
+        var marker = FindLinkedMarker(player);
+        if (marker != null) ReplaceGraveAt = marker.transform.position;
         DestroyLinkedMarker(zdo);
 
         Plugin.Logger.LogInfo($"{player.GetPlayerName()} revive window expired, proceeding to death");
@@ -308,6 +393,12 @@ public static class DownedState {
 
         // Link player → marker.
         playerZdo.Set(s_markerZDOID, markerZdo.m_uid);
+
+        // Give the marker the vanilla tombstone "drop-in" pop (Setup normally does
+        // this, but we never call Setup -- the marker is not a loot grave).
+        var body = go.GetComponent<Rigidbody>();
+        if (body != null) body.linearVelocity = new Vector3(0f, 5f, 0f);
+        LastMarkerPopVelY = body != null ? body.linearVelocity.y : 0f;
 
         // Convert immediately on the owner (TombStone.Start postfix also converts
         // on every client, incl. this one; DownedMarker.Convert is idempotent).

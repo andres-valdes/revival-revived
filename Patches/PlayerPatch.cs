@@ -12,9 +12,11 @@ static class PlayerAwakePatch {
     static void Postfix(Player __instance) {
         var nview = __instance.m_nview;
 
-        // Visual sync: hide/show the player model on every client.
+        // Visual sync: hide/show the player model on every client, and play the
+        // ragdoll-despawn poof (smoke/particles) where the player went down.
         nview.Register(DownedState.RPC_OnDowned, (long sender) => {
             __instance.m_visual.SetActive(false);
+            DownedState.PlayDownedPoof(__instance);
         });
         nview.Register(DownedState.RPC_OnRevived, (long sender) => {
             __instance.m_visual.SetActive(true);

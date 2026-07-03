@@ -55,7 +55,8 @@ public class E2ERunner : MonoBehaviour {
         _started = true;
         Log($"E2E: run starting (role='{E2EConfig.Role}')");
 
-        if (E2EConfig.IsHost) yield return StartCoroutine(RunHost());
+        if (Environment.GetEnvironmentVariable("RR_E2E_DEMO") == "1") yield return StartCoroutine(RunDemo());
+        else if (E2EConfig.IsHost) yield return StartCoroutine(RunHost());
         else if (E2EConfig.IsClient) yield return StartCoroutine(RunClient());
         else yield return StartCoroutine(RunSingleProcess());
 
@@ -292,6 +293,70 @@ public class E2ERunner : MonoBehaviour {
     }
 
     // =====================================================================
+    //  DEMO (RR_E2E_DEMO=1): slow, camera-friendly showcase for video capture.
+    // =====================================================================
+    private IEnumerator RunDemo() {
+        yield return StartCoroutine(AutoStart());
+        yield return StartCoroutine(WaitForPlayerInWorld());
+        var player = Player.m_localPlayer;
+        if (player == null) { Record("demo", false, "no player"); yield break; }
+        Log("E2E: local player ready (demo)"); // recording script keys on this
+        StartCoroutine(DespawnRavens()); // keep Hugin out of the shot
+        yield return new WaitForSecondsRealtime(3f);
+
+        // Pull the camera back for a better shot.
+        if (GameCamera.instance != null) {
+            GameCamera.instance.m_maxDistance = 9f;
+            Traverse.Create(GameCamera.instance).Field("m_distance").SetValue(8f);
+        }
+        yield return new WaitForSecondsRealtime(2f);
+
+        // 1) Go down: poof + green tombstone appears.
+        Log("DEMO: downing");
+        GiveTestItem(player);
+        player.SetHealth(0f);
+        float w = 0f;
+        while (w < 5f && !DownedState.IsDowned(player)) { w += Time.unscaledDeltaTime; yield return null; }
+        yield return new WaitForSecondsRealtime(3.5f);
+
+        // 2) Channel the full revive: the progress circle fills over HoldTime.
+        Log("DEMO: channeling revive");
+        var rev = player.GetComponent<Revivable>();
+        w = 0f;
+        while (w < 12f && DownedState.IsDowned(player)) {
+            rev?.ChannelRevive(0L);
+            w += Time.unscaledDeltaTime;
+            yield return null;
+        }
+        yield return new WaitForSecondsRealtime(3f);
+
+        // 3) Go down again and let the window expire NATURALLY (run the demo with
+        // a short RR_E2E_WINDOW so the green->red gradient and the conversion to
+        // the real tombstone play out on camera).
+        Log("DEMO: downing again, letting window run out");
+        player.SetHealth(0f);
+        w = 0f;
+        while (w < 5f && !DownedState.IsDowned(player)) { w += Time.unscaledDeltaTime; yield return null; }
+        w = 0f;
+        while (w < DownedState.ReviveWindow + 10f && !player.IsDead()) { w += Time.unscaledDeltaTime; yield return null; }
+        yield return new WaitForSecondsRealtime(5f);
+
+        Record("demo", true, "sequence complete");
+    }
+
+    /// <summary>Continuously despawn tutorial ravens so they don't photobomb the demo.</summary>
+    private IEnumerator DespawnRavens() {
+        while (true) {
+            foreach (var raven in UnityEngine.Object.FindObjectsOfType<Raven>()) {
+                if (raven != null && ZNetScene.instance != null) {
+                    ZNetScene.instance.Destroy(raven.gameObject);
+                }
+            }
+            yield return new WaitForSecondsRealtime(0.5f);
+        }
+    }
+
+    // =====================================================================
     //  SINGLE PROCESS (original suite)
     // =====================================================================
     private IEnumerator RunSingleProcess() {
@@ -305,6 +370,7 @@ public class E2ERunner : MonoBehaviour {
 
         yield return StartCoroutine(Test_LethalDamageDowns());
         yield return StartCoroutine(Test_DownedConstraints());
+        yield return StartCoroutine(Test_MarkerColorGradient());
         yield return StartCoroutine(Test_HoldProgressAndUI());
         yield return StartCoroutine(Test_ReviveRestores());
         yield return StartCoroutine(Test_PressModeRevives());
@@ -319,6 +385,13 @@ public class E2ERunner : MonoBehaviour {
         player.SetHealth(0f);
         float waited = 0f;
         while (waited < 5f && !DownedState.IsDowned(player)) { waited += Time.unscaledDeltaTime; yield return null; }
+
+        // Drop-in pop: the marker is launched upward at spawn (sampled by
+        // DownedState at the moment the velocity is applied -- reading the
+        // rigidbody here races against gravity).
+        float popVelY = DownedState.LastMarkerPopVelY;
+        bool popped = popVelY > 3f;
+
         // Let the marker's deferred Start/convert run.
         yield return new WaitForSecondsRealtime(0.5f);
         bool downed = DownedState.IsDowned(player);
@@ -329,9 +402,39 @@ public class E2ERunner : MonoBehaviour {
         bool markerIsTombstone = marker != null && marker.GetComponent<ZNetView>() != null;
         bool noRagdolls = UnityEngine.Object.FindObjectsOfType<Ragdoll>().Length == 0;
         bool visualHidden = player.m_visual != null && !player.m_visual.activeSelf;
-        Record(T, downed && notDead && hasRevivable && markerExists && markerIsTombstone && noRagdolls,
+        bool poofPlayed = DownedState.LastPoofCount > 0;
+        bool poofSmall = DownedState.LastPoofSourceName.IndexOf("Greyling", StringComparison.OrdinalIgnoreCase) >= 0;
+        Record(T, downed && notDead && hasRevivable && markerExists && markerIsTombstone && noRagdolls && poofPlayed && poofSmall && popped,
             $"downed={downed} notDead={notDead} revivable={hasRevivable} marker={markerExists} " +
-            $"tombstone={markerIsTombstone} noRagdolls={noRagdolls} visualHidden={visualHidden}");
+            $"tombstone={markerIsTombstone} noRagdolls={noRagdolls} visualHidden={visualHidden} " +
+            $"poof={DownedState.LastPoofCount} poofSrc={DownedState.LastPoofSourceName} popVelY={popVelY:F1}");
+    }
+
+    /// <summary>
+    /// The marker's accent lerps from green toward the grave's original red as
+    /// the revive window elapses. Backdating the marker's clock by half the
+    /// window must advance the blend. (Player still downed from earlier tests.)
+    /// </summary>
+    private IEnumerator Test_MarkerColorGradient() {
+        const string T = "marker_color_gradient";
+        var player = Player.m_localPlayer;
+        var marker = DownedState.FindLinkedMarker(player);
+        var dm = marker != null ? marker.GetComponent<DownedMarker>() : null;
+        if (dm == null) { Record(T, false, "no DownedMarker"); yield break; }
+
+        float blend0 = dm.CurrentBlend;
+
+        // Simulate half the window having elapsed (visual clock lives on the marker ZDO).
+        var mzdo = marker!.GetComponent<ZNetView>().GetZDO();
+        mzdo.Set(DownedState.s_downedTime,
+            mzdo.GetFloat(DownedState.s_downedTime) - DownedState.ReviveWindow * 0.5f);
+        yield return null;
+        yield return null;
+
+        float blend1 = dm.CurrentBlend;
+        bool startedGreen = blend0 < 0.25f;
+        bool progressed = blend1 > blend0 + 0.25f;
+        Record(T, startedGreen && progressed, $"blend0={blend0:F2} blend1={blend1:F2}");
     }
 
     private IEnumerator Test_DownedConstraints() {
@@ -532,27 +635,34 @@ public class E2ERunner : MonoBehaviour {
         if (!DownedState.IsDowned(player)) { Record(T, false, "could not re-down"); yield break; }
         yield return new WaitForSecondsRealtime(0.5f);
         var markerBefore = DownedState.FindLinkedMarker(player);
+        Vector3 markerPos = markerBefore != null ? markerBefore.transform.position : Vector3.zero;
 
         // Force the window to have expired.
         var zdo = player.m_nview.GetZDO();
         zdo.Set(DownedState.s_downedTime, (float)ZNet.instance.GetTimeSeconds() - DownedState.ReviveWindow - 5f);
         waited = 0f;
         while (waited < 10f && !player.IsDead()) { player.SetHealth(0f); waited += Time.unscaledDeltaTime; yield return null; }
-        yield return new WaitForSecondsRealtime(0.5f);
 
         bool dead = player.IsDead();
         bool notDowned = !DownedState.IsDowned(player);
         bool markerGone = markerBefore == null || !markerBefore;
-        // A real, non-marker tombstone should now exist (the death grave).
-        bool realTombstone = false;
+        // A real, non-marker tombstone should now exist -- standing exactly where
+        // the marker stood, with no second drop-in pop (velocity ~ zero).
+        bool realTombstone = false, inPlace = false, noPop = false;
         foreach (var t in UnityEngine.Object.FindObjectsOfType<TombStone>()) {
             var nv = t.GetComponent<ZNetView>();
-            if (nv != null && nv.IsValid() && !nv.GetZDO().GetBool(DownedState.s_isDownedMarker)) { realTombstone = true; break; }
+            if (nv == null || !nv.IsValid() || nv.GetZDO().GetBool(DownedState.s_isDownedMarker)) continue;
+            realTombstone = true;
+            inPlace = markerPos != Vector3.zero && Vector3.Distance(t.transform.position, markerPos) < 2f;
+            var rb = t.GetComponent<Rigidbody>();
+            noPop = rb == null || rb.linearVelocity.y < 1f;
+            break;
         }
         bool noRagdolls = UnityEngine.Object.FindObjectsOfType<Ragdoll>().Length == 0;
 
-        Record(T, dead && notDowned && markerGone && realTombstone && noRagdolls,
-            $"dead={dead} notDowned={notDowned} markerGone={markerGone} realTombstone={realTombstone} noRagdolls={noRagdolls}");
+        Record(T, dead && notDowned && markerGone && realTombstone && inPlace && noPop && noRagdolls,
+            $"dead={dead} notDowned={notDowned} markerGone={markerGone} realTombstone={realTombstone} " +
+            $"inPlace={inPlace} noPop={noPop} noRagdolls={noRagdolls}");
     }
 
     private static void GiveTestItem(Player player) {
@@ -606,7 +716,8 @@ public class E2ERunner : MonoBehaviour {
             } else {
                 var profile = GetOrCreateProfile("e2e_solo", "E2ESolo");
                 Game.SetProfile(profile.GetFilename(), profile.m_fileSource);
-                var world = World.GetCreateWorld("e2e_world", FileHelpers.FileSource.Local);
+                var soloWorldName = Environment.GetEnvironmentVariable("RR_E2E_WORLD") ?? "e2e_world";
+                var world = World.GetCreateWorld(soloWorldName, FileHelpers.FileSource.Local);
                 ZNet.m_onlineBackend = OnlineBackendType.Steamworks;
                 ZNet.SetServer(server: true, openServer: false, publicServer: false, world.m_name, "", world);
                 ZNet.ResetServerHost();

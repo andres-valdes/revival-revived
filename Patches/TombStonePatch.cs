@@ -1,5 +1,6 @@
 using HarmonyLib;
 using RevivalRevived.Components;
+using UnityEngine;
 
 namespace RevivalRevived.Patches;
 
@@ -17,6 +18,28 @@ static class TombStoneStartMarkerPatch {
         if (nview == null || !nview.IsValid()) return;
         if (!nview.GetZDO().GetBool(DownedState.s_isDownedMarker)) return;
         DownedMarker.Convert(__instance);
+    }
+}
+
+/// <summary>
+/// When the real (loot) tombstone spawns after a downed player dies, place it
+/// exactly where the green marker stood and suppress the vanilla drop-in pop
+/// (upward spawn velocity) -- that pop already played when the marker appeared,
+/// so the grave should simply take the marker's place.
+/// </summary>
+[HarmonyPatch(typeof(TombStone), "Setup")]
+static class TombStoneSetupReplacePatch {
+    static void Postfix(TombStone __instance) {
+        var at = DownedState.ReplaceGraveAt;
+        if (at == null) return;
+        DownedState.ReplaceGraveAt = null;
+
+        __instance.transform.position = at.Value;
+        var body = __instance.GetComponent<Rigidbody>();
+        if (body != null) {
+            body.position = at.Value;
+            body.linearVelocity = Vector3.zero;
+        }
     }
 }
 
