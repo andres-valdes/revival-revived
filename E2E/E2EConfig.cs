@@ -19,6 +19,10 @@ public static class E2EConfig {
     public static bool IsHost => Role == "host";
     public static bool IsClient => Role == "client";
 
+    /// <summary>Multiplayer scenario: "revive" (default) or "rejoin".</summary>
+    public static string Scenario => (Environment.GetEnvironmentVariable("RR_E2E_SCENARIO") ?? "revive").ToLowerInvariant();
+    public static bool IsRejoinScenario => Scenario == "rejoin";
+
     public static int Port {
         get {
             var s = Environment.GetEnvironmentVariable("RR_E2E_PORT");

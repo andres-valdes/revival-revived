@@ -91,6 +91,15 @@ public class E2ERunner : MonoBehaviour {
         Record("host_client_connected", connected, $"peers={peerCount} players={playerCount}");
         if (!connected) yield break;
 
+        // Rejoin scenario: the host is just a stable server while the client
+        // downs itself, logs out, and reconnects. Idle until the client is done.
+        if (E2EConfig.IsRejoinScenario) {
+            Log("E2E[host]: rejoin scenario -- idling as server");
+            yield return new WaitForSecondsRealtime(160f);
+            Record("host_idle_complete", true, "server stayed up for client rejoin");
+            yield break;
+        }
+
         // Give the client a moment to settle, then go down.
         yield return new WaitForSecondsRealtime(2f);
         Log("E2E[host]: downing self");
@@ -134,6 +143,11 @@ public class E2ERunner : MonoBehaviour {
         Record("client_sees_host", sawRemote, $"players={Player.GetAllPlayers().Count}");
         if (!sawRemote) yield break;
 
+        if (E2EConfig.IsRejoinScenario) {
+            yield return StartCoroutine(RunClientRejoin(me));
+            yield break;
+        }
+
         // Wait for the host to go down (replicated via ZDO).
         Log("E2E[client]: waiting for remote player to be downed...");
         Player? downed = null;
@@ -170,6 +184,64 @@ public class E2ERunner : MonoBehaviour {
         bool revivedRemote = !DownedState.IsDowned(downed);
         Record("client_revived_remote", revivedRemote,
             $"downed={DownedState.IsDowned(downed)} channelSecs={interactSeconds:F1}");
+    }
+
+    /// <summary>
+    /// Rejoin scenario: the client downs itself, logs out, and reconnects. Because
+    /// a downed player can't cheat death by disconnecting, on reconnect the
+    /// orphaned marker is detected and the player dies (real tombstone spawned).
+    /// </summary>
+    private IEnumerator RunClientRejoin(Player me) {
+        // Down self (client owns its own player ZDO).
+        Log("E2E[client]: downing self before logout");
+        me.SetHealth(0f);
+        float w = 0f;
+        while (w < 6f && !DownedState.IsDowned(me)) { w += Time.unscaledDeltaTime; yield return null; }
+        if (!DownedState.IsDowned(me)) { Record("rejoin_pre_down", false, "could not down self"); yield break; }
+        yield return new WaitForSecondsRealtime(1f);
+        long pid = me.GetPlayerID();
+        bool hadMarker = DownedState.FindMarkerForPlayer(pid) != null;
+        Record("rejoin_pre_down", hadMarker, $"downed=True marker={hadMarker}");
+        if (!hadMarker) yield break;
+
+        // Log out to the main menu (persistent marker survives on the server).
+        Log("E2E[client]: logging out...");
+        Game.instance.Logout(save: true, changeToStartScene: true);
+
+        w = 0f;
+        while (w < 60f && FejdStartup.instance == null) { w += Time.unscaledDeltaTime; yield return null; }
+        if (FejdStartup.instance == null) { Record("rejoin_reconnect", false, "menu did not return"); yield break; }
+        Log("E2E[client]: back at menu, reconnecting...");
+
+        // Reconnect as client.
+        _worldStartIssued = false;
+        yield return StartCoroutine(AutoStart());
+        yield return StartCoroutine(WaitForPlayerInWorld());
+
+        var me2 = Player.m_localPlayer;
+        if (me2 == null) { Record("rejoin_reconnect", false, "no local player after reconnect"); yield break; }
+        Record("rejoin_reconnect", true, $"name={me2.GetPlayerName()}");
+
+        // On reconnect the DisconnectDeathCheck should find the orphan and kill us.
+        Log("E2E[client]: waiting for disconnect-death on reconnect...");
+        bool diedOnReconnect = false;
+        bool markerGone = false;
+        bool realTombstone = false;
+        w = 0f;
+        while (w < 20f) {
+            if (Player.m_localPlayer != null && Player.m_localPlayer.IsDead()) diedOnReconnect = true;
+            markerGone = DownedState.FindMarkerForPlayer(pid) == null;
+            foreach (var t in UnityEngine.Object.FindObjectsOfType<TombStone>()) {
+                var nv = t.GetComponent<ZNetView>();
+                if (nv != null && nv.IsValid() && !nv.GetZDO().GetBool(DownedState.s_isDownedMarker)) { realTombstone = true; break; }
+            }
+            if (diedOnReconnect && markerGone) break;
+            w += Time.unscaledDeltaTime;
+            yield return null;
+        }
+        bool notDowned = Player.m_localPlayer == null || !DownedState.IsDowned(Player.m_localPlayer);
+        Record("reconnect_downed_dies", diedOnReconnect && markerGone && notDowned,
+            $"died={diedOnReconnect} markerGone={markerGone} realTombstone={realTombstone} notDowned={notDowned}");
     }
 
     private IEnumerator ValidateMarker(Player downed) {
@@ -230,6 +302,8 @@ public class E2ERunner : MonoBehaviour {
         yield return StartCoroutine(Test_LethalDamageDowns());
         yield return StartCoroutine(Test_DownedConstraints());
         yield return StartCoroutine(Test_ReviveRestores());
+        yield return StartCoroutine(Test_DisconnectDeath());
+        yield return StartCoroutine(WaitForAlivePlayer());
         yield return StartCoroutine(Test_ExpiryKills());
     }
 
@@ -303,6 +377,66 @@ public class E2ERunner : MonoBehaviour {
         Record(T, notDowned && revivableGone && healthy && canMove && visualBack && collider && notKinematic && markerGone,
             $"notDowned={notDowned} revivableGone={revivableGone} hp={player.GetHealth():F0} canMove={canMove} " +
             $"visualBack={visualBack} collider={collider} notKinematic={notKinematic} markerGone={markerGone}");
+    }
+
+    /// <summary>
+    /// Verifies "downed + disconnect = death" via the reconnect path, without a
+    /// full reconnect: down the player, then simulate the reconnected fresh
+    /// character (downed ZDO state gone, health clamped back to full by vanilla
+    /// Load) while the persistent green marker survives as an orphan. The
+    /// DisconnectDeathCheck should find the orphan and complete the death: real
+    /// tombstone spawned, green marker gone, player dead, no ragdoll.
+    /// </summary>
+    private IEnumerator Test_DisconnectDeath() {
+        const string T = "disconnect_kills_on_reconnect";
+        var player = Player.m_localPlayer;
+        player.SetHealth(player.GetMaxHealth());
+        GiveTestItem(player); // so the death grave has loot
+        yield return null;
+
+        // Down once -> green marker.
+        player.SetHealth(0f);
+        float w = 0f;
+        while (w < 5f && !DownedState.IsDowned(player)) { w += Time.unscaledDeltaTime; yield return null; }
+        yield return new WaitForSecondsRealtime(0.5f);
+        var m1 = DownedState.FindLinkedMarker(player);
+        if (m1 == null) { Record(T, false, "no marker after down"); yield break; }
+
+        // Simulate reconnect: fresh character (no downed ZDO state, full health),
+        // orphan marker left behind.
+        var zdo = player.m_nview.GetZDO();
+        zdo.Set(DownedState.s_downed, false);
+        zdo.Set(DownedState.s_markerZDOID, ZDOID.None);
+        var rev = player.GetComponent<Revivable>();
+        if (rev != null) UnityEngine.Object.Destroy(rev);
+        player.SetHealth(player.GetMaxHealth());
+        player.m_collider.enabled = true;
+        player.m_body.isKinematic = false;
+        if (player.m_visual != null) player.m_visual.SetActive(true);
+        yield return null;
+
+        // Run the reconnect check (as PlayerOnSpawnedPatch would).
+        player.gameObject.AddComponent<DisconnectDeathCheck>();
+
+        // Wait for it to find the orphan and kill the player.
+        w = 0f;
+        while (w < 8f && !player.IsDead()) { w += Time.unscaledDeltaTime; yield return null; }
+        yield return new WaitForSecondsRealtime(0.5f);
+
+        bool dead = player.IsDead();
+        bool markerGone = DownedState.FindMarkerForPlayer(player.GetPlayerID()) == null;
+        bool realTombstone = false;
+        foreach (var t in UnityEngine.Object.FindObjectsOfType<TombStone>()) {
+            var nv = t.GetComponent<ZNetView>();
+            if (nv != null && nv.IsValid() && !nv.GetZDO().GetBool(DownedState.s_isDownedMarker)) { realTombstone = true; break; }
+        }
+        bool noRagdolls = UnityEngine.Object.FindObjectsOfType<Ragdoll>().Length == 0;
+
+        Record(T, dead && markerGone && realTombstone && noRagdolls,
+            $"dead={dead} markerGone={markerGone} realTombstone={realTombstone} noRagdolls={noRagdolls}");
+
+        // Let the vanilla respawn restore the player for any following tests.
+        yield return new WaitForSecondsRealtime(0.5f);
     }
 
     private IEnumerator Test_ExpiryKills() {
@@ -423,6 +557,21 @@ public class E2ERunner : MonoBehaviour {
         np.m_firstSpawn = false;
         np.Save();
         return np;
+    }
+
+    /// <summary>Wait until the local player is alive again (after a death/respawn).</summary>
+    private IEnumerator WaitForAlivePlayer() {
+        float w = 0f;
+        while (w < 30f) {
+            var p = Player.m_localPlayer;
+            if (p != null && p.m_nview != null && p.m_nview.IsValid() && !p.IsDead() && p.GetHealth() > 0f) {
+                yield return new WaitForSecondsRealtime(0.5f);
+                yield break;
+            }
+            w += Time.unscaledDeltaTime;
+            yield return null;
+        }
+        Log("E2E: WaitForAlivePlayer timed out");
     }
 
     private IEnumerator WaitForPlayerInWorld() {

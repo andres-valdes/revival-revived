@@ -16,8 +16,13 @@ namespace RevivalRevived.Components;
 /// removed and vanilla spawns the real (red, functional) tombstone.
 /// </summary>
 public static class DownedState {
-    /// <summary>Revive window duration in seconds.</summary>
-    public const float ReviveWindow = 30f;
+    /// <summary>Revive window duration in seconds (overridable via RR_E2E_WINDOW for tests).</summary>
+    public static readonly float ReviveWindow = ReadWindowOverride();
+
+    private static float ReadWindowOverride() {
+        var s = System.Environment.GetEnvironmentVariable("RR_E2E_WINDOW");
+        return float.TryParse(s, out var v) && v > 0f ? v : 30f;
+    }
 
     /// <summary>How long the channeled revive interaction takes.</summary>
     public const float ReviveDuration = 4f;
@@ -39,6 +44,8 @@ public static class DownedState {
     public static readonly int s_isDownedMarker = "RevivalRevived_isDownedMarker".GetStableHashCode();
     /// <summary>Revive channel progress 0-1, written by the downed player's owner for hover UI.</summary>
     public static readonly int s_reviveProgress = "RevivalRevived_reviveProgress".GetStableHashCode();
+    /// <summary>Stable PlayerID of the downed player (survives logout/rejoin, unlike the character ZDOID).</summary>
+    public static readonly int s_ownerPlayerID = "RevivalRevived_ownerPlayerID".GetStableHashCode();
 
     // ZDOID pairs (long + uint), matching Valheim's convention.
     public static readonly KeyValuePair<int, int> s_markerZDOID = ZDO.GetHashZDOID("RevivalRevived_markerZDOID");
@@ -77,6 +84,59 @@ public static class DownedState {
         player.Message(MessageHud.MessageType.Center, "You are downed!");
 
         Plugin.Logger.LogInfo($"{player.GetPlayerName()} entered downed state (owner)");
+    }
+
+    /// <summary>
+    /// Find a downed marker in the loaded world belonging to the given stable
+    /// PlayerID. Used to detect an orphaned marker left by a downed player who
+    /// disconnected ungracefully, so we can complete their death on reconnect.
+    /// </summary>
+    public static GameObject? FindMarkerForPlayer(long playerId) {
+        if (playerId == 0L) return null;
+        foreach (var dm in Object.FindObjectsOfType<DownedMarker>()) {
+            var nv = dm.GetComponent<ZNetView>();
+            if (nv == null || !nv.IsValid()) continue;
+            if (nv.GetZDO().GetLong(s_ownerPlayerID, 0L) == playerId) return dm.gameObject;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Complete the death of a downed player: remove the green marker and run
+    /// vanilla death so the real (looted) tombstone spawns and the player is
+    /// marked dead. Used when a downed player disconnects or reconnects after a
+    /// disconnect while downed. Owner only.
+    /// </summary>
+    public static void KillDowned(Player player) {
+        if (player == null || !player.m_nview.IsValid() || !player.m_nview.IsOwner()) return;
+
+        var zdo = player.m_nview.GetZDO();
+        zdo.Set(s_downed, false);
+        zdo.Set(s_reviveProgress, 0f);
+
+        // Remove the green marker; vanilla OnDeath will spawn the real grave.
+        DestroyLinkedMarker(zdo);
+        // Also remove any orphaned marker for this player (disgraceful disconnect).
+        // On reconnect the marker is owned by the server, so claim it first.
+        DestroyMarkerObject(FindMarkerForPlayer(player.GetPlayerID()));
+
+        var rev = player.GetComponent<Revivable>();
+        if (rev != null) Object.Destroy(rev);
+
+        // Restore control so vanilla death runs cleanly.
+        if (player.m_collider != null) player.m_collider.enabled = true;
+        if (player.m_body != null) player.m_body.isKinematic = false;
+        if (player.m_visual != null) player.m_visual.SetActive(true);
+
+        // Guard: OnDeath dereferences m_lastHit before spawning the grave.
+        if (player.m_lastHit == null) {
+            player.m_lastHit = new HitData { m_hitType = HitData.HitType.Self };
+        }
+        player.SetHealth(0f);
+
+        // Invoke vanilla death directly (spawns the real tombstone, sets s_dead).
+        HarmonyLib.Traverse.Create(player).Method("OnDeath").GetValue();
+        Plugin.Logger.LogInfo($"{player.GetPlayerName()} died from being downed at disconnect");
     }
 
     /// <summary>
@@ -231,6 +291,7 @@ public static class DownedState {
         // Flag it as a downed marker so every client converts it (green, no loot).
         markerZdo.Set(s_isDownedMarker, true);
         markerZdo.Set(s_playerZDOID, playerZdo.m_uid);
+        markerZdo.Set(s_ownerPlayerID, player.GetPlayerID()); // stable across rejoin
         markerZdo.Set(ZDOVars.s_ownerName, player.GetPlayerName()); // world text
         markerZdo.Set(s_downedTime, (float)ZNet.instance.GetTimeSeconds());
 
@@ -250,11 +311,19 @@ public static class DownedState {
         if (markerId == ZDOID.None) return;
 
         playerZdo.Set(s_markerZDOID, ZDOID.None);
+        DestroyMarkerObject(ZNetScene.instance.FindInstance(markerId));
+    }
 
-        var go = ZNetScene.instance.FindInstance(markerId);
-        if (go != null) {
-            var nview = go.GetComponent<ZNetView>();
-            if (nview != null) nview.Destroy();
-        }
+    /// <summary>
+    /// Destroy a marker tombstone. Claims ownership first: after a downed player
+    /// disconnects, ownership of their marker transfers to the server, so a
+    /// reconnecting (non-owner) client must claim it before Destroy will replicate.
+    /// </summary>
+    public static void DestroyMarkerObject(GameObject? go) {
+        if (go == null) return;
+        var nview = go.GetComponent<ZNetView>();
+        if (nview == null || !nview.IsValid()) return;
+        if (!nview.IsOwner()) nview.ClaimOwnership();
+        nview.Destroy();
     }
 }

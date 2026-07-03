@@ -132,3 +132,19 @@ static class PlayerOnRespawnPatch {
         return true;
     }
 }
+
+/// <summary>
+/// On spawn, attach the disconnect-death check to the local player so that a
+/// player who disconnected while downed dies on reconnect (see
+/// <see cref="DisconnectDeathCheck"/>).
+/// </summary>
+[HarmonyPatch(typeof(Player), "OnSpawned")]
+static class PlayerOnSpawnedPatch {
+    static void Postfix(Player __instance) {
+        if (__instance == Player.m_localPlayer
+            && __instance.m_nview != null && __instance.m_nview.IsValid() && __instance.m_nview.IsOwner()
+            && __instance.GetComponent<DisconnectDeathCheck>() == null) {
+            __instance.gameObject.AddComponent<DisconnectDeathCheck>();
+        }
+    }
+}
