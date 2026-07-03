@@ -192,6 +192,21 @@ public class E2ERunner : MonoBehaviour {
             $"downed={DownedState.IsDowned(downed)} channelSecs={interactSeconds:F1}");
         // The radial progress UI must have shown on the reviver while channeling.
         Record("client_progress_ui", uiSeen && maxUiFill > 0.3f, $"uiSeen={uiSeen} maxFill={maxUiFill:F2}");
+
+        // Regression (manual play): after the revive, the remote player must be
+        // VISIBLE and solid again on this client -- the old RPC-based restore
+        // raced the ZDO flag and left the player invisible forever.
+        float vw = 0f;
+        bool visibleAgain = false, solidAgain = false;
+        while (vw < 5f && downed != null) {
+            visibleAgain = downed.m_visual != null && downed.m_visual.activeSelf;
+            solidAgain = downed.m_collider != null && downed.m_collider.enabled;
+            if (visibleAgain && solidAgain) break;
+            vw += Time.unscaledDeltaTime;
+            yield return null;
+        }
+        Record("client_host_visible_after_revive", visibleAgain && solidAgain,
+            $"visible={visibleAgain} colliderOn={solidAgain} after={vw:F1}s");
     }
 
     /// <summary>
@@ -367,10 +382,9 @@ public class E2ERunner : MonoBehaviour {
 
         // 2) Channel the full revive: the progress circle fills over HoldTime.
         Log("DEMO: channeling revive");
-        var rev = player.GetComponent<Revivable>();
         w = 0f;
         while (w < 12f && DownedState.IsDowned(player)) {
-            rev?.ChannelRevive(0L);
+            FindMarkerInteractable(player)?.SimulateHold();
             w += Time.unscaledDeltaTime;
             yield return null;
         }
@@ -523,20 +537,25 @@ public class E2ERunner : MonoBehaviour {
         const string T = "hold_progress_and_ui";
         var player = Player.m_localPlayer;
         if (!DownedState.IsDowned(player)) { Record(T, false, "precondition: not downed"); yield break; }
-        var rev = player.GetComponent<Revivable>();
-        if (rev == null) { Record(T, false, "no Revivable"); yield break; }
+        var interactable = FindMarkerInteractable(player);
+        if (interactable == null) { Record(T, false, "no marker interactable"); yield break; }
 
-        // Channel for a while (well below the 4s hold time).
+        // Channel for a while (well below the 4s hold time). The timer is
+        // peer-authoritative: it lives in the marker's ReviveInteractable on the
+        // channeling client, so progress must respond with no replication lag.
         float remainingBefore = DownedState.GetRemainingTime(player);
-        float t = 0f, maxProg = 0f, maxFill = 0f;
+        float t = 0f, maxProg = 0f, maxFill = 0f, firstProgressAt = -1f;
         bool uiSeen = false;
         while (t < 1.5f) {
-            rev.ChannelRevive(0L);
-            maxProg = Mathf.Max(maxProg, DownedState.GetReviveProgress(player));
+            interactable.SimulateHold();
+            var prog = DownedState.GetReviveProgress(player);
+            if (prog > 0.05f && firstProgressAt < 0f) firstProgressAt = t;
+            maxProg = Mathf.Max(maxProg, prog);
             if (ReviveProgressUI.Visible) { uiSeen = true; maxFill = Mathf.Max(maxFill, ReviveProgressUI.Fill); }
             t += Time.unscaledDeltaTime;
             yield return null;
         }
+        bool responsive = firstProgressAt >= 0f && firstProgressAt < 0.6f;
         // The bleed-out window must PAUSE while channeling: ~1.5s elapsed but the
         // remaining time should be (nearly) unchanged.
         float remainingAfter = DownedState.GetRemainingTime(player);
@@ -550,10 +569,11 @@ public class E2ERunner : MonoBehaviour {
         bool decayed = DownedState.GetReviveProgress(player) <= 0.01f;
         bool uiHidden = !ReviveProgressUI.Visible;
 
-        Record(T, partial && stillDowned && uiSeen && decayed && uiHidden && windowPaused,
+        Record(T, partial && stillDowned && uiSeen && decayed && uiHidden && windowPaused && responsive,
             $"maxProg={maxProg:F2} partial={partial} stillDowned={stillDowned} uiSeen={uiSeen} " +
             $"maxFill={maxFill:F2} decayed={decayed} uiHidden={uiHidden} " +
-            $"windowPaused={windowPaused} remBefore={remainingBefore:F1} remAfter={remainingAfter:F1}");
+            $"windowPaused={windowPaused} remBefore={remainingBefore:F1} remAfter={remainingAfter:F1} " +
+            $"responsive={responsive} firstProgressAt={firstProgressAt:F2}");
     }
 
     /// <summary>
@@ -576,9 +596,9 @@ public class E2ERunner : MonoBehaviour {
         }
         yield return new WaitForSecondsRealtime(0.5f);
 
-        // One press worth of channel input.
-        var rev = player.GetComponent<Revivable>();
-        rev?.ChannelRevive(0L);
+        // One press worth of channel input (press mode fires DoRevive from the
+        // interactable's next Update).
+        FindMarkerInteractable(player)?.SimulateHold();
 
         w = 0f;
         while (w < 3f && DownedState.IsDowned(player)) { w += Time.unscaledDeltaTime; yield return null; }
@@ -846,6 +866,12 @@ public class E2ERunner : MonoBehaviour {
     // =====================================================================
     //  Helpers
     // =====================================================================
+    /// <summary>Marker interactable for a downed player (single-process tests/demo).</summary>
+    private static ReviveInteractable? FindMarkerInteractable(Player downed) {
+        var marker = DownedState.FindLinkedMarker(downed);
+        return marker != null ? marker.GetComponentInChildren<ReviveInteractable>() : null;
+    }
+
     /// <summary>
     /// Locate the downed player's revive interactable the way the real game
     /// does: a raycast through Player.m_interactMask toward the marker, taking

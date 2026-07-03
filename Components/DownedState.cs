@@ -42,9 +42,12 @@ public static class DownedState {
     public const float ReviveHealthFraction = 0.25f;
 
     // RPC names
+    /// <summary>Broadcast: play the downed poof at the player (visuals are otherwise ZDO-driven).</summary>
     public const string RPC_OnDowned = "RevivalRevived_OnDowned";
-    public const string RPC_OnRevived = "RevivalRevived_OnRevived";
+    /// <summary>Reviver -> owner: "someone is channeling", pauses the bleed-out window.</summary>
     public const string RPC_Channel = "RevivalRevived_Channel";
+    /// <summary>Reviver -> owner: the (peer-authoritative) hold completed, execute the revive.</summary>
+    public const string RPC_DoRevive = "RevivalRevived_DoRevive";
 
     // ZDO field hashes (prefixed to avoid collisions)
     public static readonly int s_downed = "RevivalRevived_downed".GetStableHashCode();
@@ -87,27 +90,22 @@ public static class DownedState {
 
         ReplaceGraveAt = null; // stale replace-position must not affect this cycle
 
-        // Mark downed on player ZDO (replicates to all clients)
+        // Mark downed on player ZDO. Everything presentational (hide visual,
+        // disable collider, freeze body) is enforced by the Revivable component,
+        // which every client attaches in reaction to this replicated flag.
         zdo.Set(s_downed, true);
         zdo.Set(s_downedTime, (float)ZNet.instance.GetTimeSeconds());
-        zdo.Set(s_reviveProgress, 0f);
 
-        // Add the owner-authoritative revive controller.
         if (player.GetComponent<Revivable>() == null) {
             player.gameObject.AddComponent<Revivable>();
         }
 
-        // Hide the player visual on every client (same idea as vanilla RPC_OnDeath)
+        // Broadcast the downed poof (a transient effect; state is ZDO-driven).
         nview.InvokeRPC(ZNetView.Everybody, RPC_OnDowned);
 
         // Spawn the green tombstone marker at the death spot.
         SpawnDownedMarker(player);
 
-        // Disable collision and freeze the player body
-        player.m_collider.enabled = false;
-        player.m_body.isKinematic = true;
-
-        // Notify the downed player
         player.Message(MessageHud.MessageType.Center, "You are downed!");
 
         Plugin.Logger.LogInfo($"{player.GetPlayerName()} entered downed state (owner)");
@@ -243,28 +241,15 @@ public static class DownedState {
             return;
         }
 
+        // Clearing the replicated flag is the whole state transition: every
+        // client's Revivable observes it and restores visual/collider locally
+        // (no RPC ordering races -- the flag and the restore travel together).
         var zdo = downedPlayer.m_nview.GetZDO();
-
-        // Clear downed state
         zdo.Set(s_downed, false);
-        zdo.Set(s_reviveProgress, 0f);
 
-        // Re-enable collision and physics
-        downedPlayer.m_collider.enabled = true;
-        downedPlayer.m_body.isKinematic = false;
-
-        // Clean up Revivable component
-        var revivable = downedPlayer.GetComponent<Revivable>();
-        if (revivable != null) Object.Destroy(revivable);
-
-        // Restore health
         var maxHp = downedPlayer.GetMaxHealth();
         downedPlayer.SetHealth(Mathf.Max(maxHp * ReviveHealthFraction, 1f));
 
-        // Show the player visual again on every client
-        downedPlayer.m_nview.InvokeRPC(ZNetView.Everybody, RPC_OnRevived);
-
-        // Destroy the linked marker
         DestroyLinkedMarker(zdo);
 
         downedPlayer.Message(MessageHud.MessageType.Center, "You have been revived!");
@@ -288,15 +273,12 @@ public static class DownedState {
 
         var zdo = player.m_nview.GetZDO();
         zdo.Set(s_downed, false);
-        zdo.Set(s_reviveProgress, 0f);
 
-        // Re-enable collision and physics
+        // Vanilla death needs the body back under physics control right now
+        // (before OnDeath runs this same tick); the Revivable teardown skips
+        // dead players, so do it here.
         player.m_collider.enabled = true;
         player.m_body.isKinematic = false;
-
-        // Clean up Revivable component
-        var revivable = player.GetComponent<Revivable>();
-        if (revivable != null) Object.Destroy(revivable);
 
         // Remove the green marker; vanilla OnDeath will spawn the real tombstone
         // in its place (no second drop-in pop).
@@ -335,10 +317,16 @@ public static class DownedState {
         return Mathf.Max(0f, ReviveWindow - (now - downedTime));
     }
 
-    /// <summary>Revive channel progress 0-1, readable on any client.</summary>
+    /// <summary>
+    /// Revive channel progress 0-1. Read from the linked marker's ZDO -- written
+    /// peer-authoritatively by whichever client is channeling.
+    /// </summary>
     public static float GetReviveProgress(Player player) {
-        if (player?.m_nview == null || !player.m_nview.IsValid()) return 0f;
-        return player.m_nview.GetZDO().GetFloat(s_reviveProgress);
+        var marker = FindLinkedMarker(player);
+        if (marker == null) return 0f;
+        var nv = marker.GetComponent<ZNetView>();
+        if (nv == null || !nv.IsValid()) return 0f;
+        return nv.GetZDO().GetFloat(s_reviveProgress);
     }
 
     /// <summary>

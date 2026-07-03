@@ -12,37 +12,27 @@ static class PlayerAwakePatch {
     static void Postfix(Player __instance) {
         var nview = __instance.m_nview;
 
-        // Visual sync: hide/show the player model on every client, and play the
-        // ragdoll-despawn poof (smoke/particles) where the player went down.
+        // Transient poof effect on down; all state is ZDO-driven via Revivable.
         nview.Register(DownedState.RPC_OnDowned, (long sender) => {
-            __instance.m_visual.SetActive(false);
             DownedState.PlayDownedPoof(__instance);
         });
-        nview.Register(DownedState.RPC_OnRevived, (long sender) => {
-            __instance.m_visual.SetActive(true);
-        });
 
-        // Revive channel: routed to the owner of this player's ZDO. Feed the
-        // owner-authoritative Revivable.
+        // Reviver -> owner: "still channeling" ping (pauses the bleed-out window).
         nview.Register(DownedState.RPC_Channel, (long sender) => {
             if (!nview.IsOwner()) return;
-            var rev = __instance.GetComponent<Revivable>();
-            if (rev == null && DownedState.IsDowned(__instance)) {
-                rev = __instance.gameObject.AddComponent<Revivable>();
-            }
-            rev?.ChannelRevive(sender);
+            __instance.GetComponent<Revivable>()?.ChannelPing();
         });
 
-        // Late join / streamed-in-while-downed: reflect the replicated state.
-        if (DownedState.IsDowned(__instance)) {
-            if (__instance.GetComponent<Revivable>() == null) {
-                __instance.gameObject.AddComponent<Revivable>();
-            }
-            __instance.m_visual.SetActive(false);
-            if (nview.IsOwner()) {
-                __instance.m_collider.enabled = false;
-                __instance.m_body.isKinematic = true;
-            }
+        // Reviver -> owner: peer-authoritative hold completed, execute the revive.
+        nview.Register(DownedState.RPC_DoRevive, (long sender) => {
+            if (!nview.IsOwner() || !DownedState.IsDowned(__instance)) return;
+            DownedState.Revive(__instance, sender);
+        });
+
+        // Late join / streamed-in-while-downed: the component reflects the
+        // replicated state; everything else happens in its Update.
+        if (DownedState.IsDowned(__instance) && __instance.GetComponent<Revivable>() == null) {
+            __instance.gameObject.AddComponent<Revivable>();
         }
     }
 }
@@ -76,40 +66,15 @@ static class CharacterUpdateMotionPatch {
 }
 
 /// <summary>
-/// Per-frame, ZDO-driven downed-state enforcement for every player instance
-/// (owner and remote). This is the single place that reconciles a player's
-/// local components/visual with the replicated <c>s_downed</c> flag:
-///   - attach a <see cref="Revivable"/> if the ZDO says downed and we lack one
-///     (the Revivable destroys itself once the ZDO says not-downed);
-///   - keep the model hidden on every client;
-///   - on the owner, keep the body frozen in place at the death spot.
+/// ZDO-driven component attach: any player instance whose replicated ZDO says
+/// downed gets a <see cref="Revivable"/>, which owns all downed-state
+/// presentation and enforcement (and tears itself down when the flag clears).
 /// </summary>
 [HarmonyPatch(typeof(Player), "LateUpdate")]
 static class PlayerLateUpdatePatch {
     static void Postfix(Player __instance) {
-        if (!DownedState.IsDowned(__instance)) return;
-
-        if (__instance.GetComponent<Revivable>() == null) {
+        if (DownedState.IsDowned(__instance) && __instance.GetComponent<Revivable>() == null) {
             __instance.gameObject.AddComponent<Revivable>();
-        }
-
-        // Enforce hidden visual on all clients (robust against a missed RPC).
-        if (__instance.m_visual != null && __instance.m_visual.activeSelf) {
-            __instance.m_visual.SetActive(false);
-        }
-
-        // The corpse must not collide on ANY client: a live collider makes the
-        // invisible body block movement and eats the hover raycast before it can
-        // reach the marker (Player.FindHoverObject stops at the first hit).
-        if (__instance.m_collider != null && __instance.m_collider.enabled) {
-            __instance.m_collider.enabled = false;
-        }
-
-        if (__instance.m_nview != null && __instance.m_nview.IsValid() && __instance.m_nview.IsOwner()) {
-            // Keep the downed player frozen in place at the death spot; the green
-            // tombstone marker is a separate, self-syncing networked object.
-            // (Remote bodies are already kinematic via ZSyncTransform.)
-            __instance.m_body.isKinematic = true;
         }
     }
 }
