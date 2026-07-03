@@ -12,15 +12,22 @@ namespace RevivalRevived.Patches;
 /// </summary>
 [HarmonyPatch(typeof(TombStone), "Setup")]
 static class TombStoneSetupReplacePatch {
-    static void Postfix(TombStone __instance) {
-        var at = DownedMarker.ReplaceGraveAt;
-        if (at == null) return;
-        DownedMarker.ReplaceGraveAt = null;
+    static void Postfix(TombStone __instance, long ownerUID) {
+        // Graves are only Setup() by the dying player's own client; the replace
+        // request lives on that player's ZDO (owner-written, no global state).
+        var player = Player.m_localPlayer;
+        if (player == null || player.m_nview == null || !player.m_nview.IsValid()) return;
+        if (ownerUID != player.GetPlayerID()) return;
 
-        __instance.transform.position = at.Value;
+        var zdo = player.m_nview.GetZDO();
+        if (!zdo.GetBool(DownedKeys.GraveReplacePending)) return;
+        zdo.Set(DownedKeys.GraveReplacePending, false); // consume
+
+        var at = zdo.GetVec3(DownedKeys.GraveReplacePos, __instance.transform.position);
+        __instance.transform.position = at;
         var body = __instance.GetComponent<Rigidbody>();
         if (body != null) {
-            body.position = at.Value;
+            body.position = at;
             body.linearVelocity = Vector3.zero;
         }
     }

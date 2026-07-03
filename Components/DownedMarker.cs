@@ -54,13 +54,6 @@ public class DownedMarker : MonoBehaviour {
     /// <summary>Upward launch velocity applied to the last spawned marker (test hook).</summary>
     public static float LastPopVelY { get; private set; }
 
-    /// <summary>
-    /// When set, the next real (loot) tombstone spawned by vanilla death
-    /// replaces the removed marker seamlessly: same position, no drop-in pop
-    /// (it already played when the marker spawned). Consumed by the
-    /// TombStone.Setup patch.
-    /// </summary>
-    public static Vector3? ReplaceGraveAt;
 
     /// <summary>
     /// Spawn the green marker for a freshly-downed player (owner only) and

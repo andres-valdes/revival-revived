@@ -61,13 +61,19 @@ public class DisconnectDeathCheck : MonoBehaviour {
         zdo.Set(DownedKeys.Downed, false);
 
         // Remove any linked or orphaned marker; the real grave replaces it
-        // in place (no second drop-in pop). On reconnect the marker is owned by
-        // the server, so DestroyMarker claims it first.
+        // in place (no second drop-in pop) via the replace fields on our own
+        // player ZDO. On reconnect the marker is owned by the server, so
+        // DestroyMarker claims it first.
         var linked = player.FindDownedMarker();
-        if (linked != null) DownedMarker.ReplaceGraveAt = linked.transform.position;
-        DownedMarker.DestroyLinkedMarker(zdo);
         var orphan = DownedMarker.FindFor(player.GetPlayerID());
-        if (orphan != null) DownedMarker.ReplaceGraveAt = orphan.transform.position;
+        var replaceAt = orphan != null ? orphan.transform.position
+                      : linked != null ? linked.transform.position
+                      : (Vector3?)null;
+        if (replaceAt != null) {
+            zdo.Set(DownedKeys.GraveReplacePending, true);
+            zdo.Set(DownedKeys.GraveReplacePos, replaceAt.Value);
+        }
+        DownedMarker.DestroyLinkedMarker(zdo);
         DownedMarker.DestroyMarker(orphan);
 
         var rev = player.GetComponent<Revivable>();

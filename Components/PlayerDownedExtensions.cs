@@ -63,7 +63,7 @@ public static class PlayerDownedExtensions {
     public static void EnterDownedState(this Player player) {
         var zdo = player.m_nview.GetZDO();
 
-        DownedMarker.ReplaceGraveAt = null; // stale replace-position must not leak in
+        zdo.Set(DownedKeys.GraveReplacePending, false); // stale replace must not leak in
 
         zdo.Set(DownedKeys.Downed, true);
         zdo.Set(DownedKeys.DownedTime, (float)ZNet.instance.GetTimeSeconds());
@@ -119,7 +119,12 @@ public static class PlayerDownedExtensions {
         player.m_body.isKinematic = false;
 
         var marker = player.FindDownedMarker();
-        if (marker != null) DownedMarker.ReplaceGraveAt = marker.transform.position;
+        if (marker != null) {
+            // Ask the upcoming real grave to replace the marker in place (we own
+            // this player ZDO; the grave-spawn patch consumes it).
+            zdo.Set(DownedKeys.GraveReplacePending, true);
+            zdo.Set(DownedKeys.GraveReplacePos, marker.transform.position);
+        }
         DownedMarker.DestroyLinkedMarker(zdo);
 
         Plugin.Logger.LogInfo($"{player.GetPlayerName()} revive window expired, proceeding to death");

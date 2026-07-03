@@ -20,6 +20,10 @@ public static class DownedKeys {
     // --- Player ZDO fields (owner-written) --------------------------------
     public static readonly int Downed = "RevivalRevived_downed".GetStableHashCode();
     public static readonly int DownedTime = "RevivalRevived_downedTime".GetStableHashCode();
+    /// <summary>Set when a downed player dies: the real grave should replace the marker (no drop-in pop).</summary>
+    public static readonly int GraveReplacePending = "RevivalRevived_graveReplacePending".GetStableHashCode();
+    /// <summary>Where the marker stood when the downed player died; the real grave spawns exactly there.</summary>
+    public static readonly int GraveReplacePos = "RevivalRevived_graveReplacePos".GetStableHashCode();
 
     // --- Marker ZDO fields -------------------------------------------------
     /// <summary>Flags a tombstone as a downed marker rather than a real grave.</summary>
