@@ -5,23 +5,6 @@ using UnityEngine;
 namespace RevivalRevived.Patches;
 
 /// <summary>
-/// Converts any tombstone flagged as a downed marker into the green revive
-/// marker. Runs on every client: the owner instantiates the tombstone and sets
-/// the ZDO flag, remotes instantiate it from the streamed ZDO. Because Unity
-/// defers Start by a frame, the owner's flag (set right after Instantiate) is in
-/// place before this postfix runs.
-/// </summary>
-[HarmonyPatch(typeof(TombStone), "Start")]
-static class TombStoneStartMarkerPatch {
-    static void Postfix(TombStone __instance) {
-        var nview = __instance.GetComponent<ZNetView>();
-        if (nview == null || !nview.IsValid()) return;
-        if (!nview.GetZDO().GetBool(DownedKeys.IsDownedMarker)) return;
-        DownedMarker.Convert(__instance);
-    }
-}
-
-/// <summary>
 /// When the real (loot) tombstone spawns after a downed player dies, place it
 /// exactly where the green marker stood and suppress the vanilla drop-in pop
 /// (upward spawn velocity) -- that pop already played when the marker appeared,

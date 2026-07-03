@@ -63,28 +63,28 @@ public class DownedMarker : MonoBehaviour {
     public static Vector3? ReplaceGraveAt;
 
     /// <summary>
-    /// Spawn the green marker tombstone for a freshly-downed player (owner only)
-    /// and cross-link it to the player via ZDO.
+    /// Spawn the green marker for a freshly-downed player (owner only) and
+    /// cross-link it to the player via ZDO. Instantiates OUR registered prefab;
+    /// remote clients instantiate the same prefab from the replicated ZDO.
     /// </summary>
     public static void Spawn(Player player) {
-        var prefab = player.m_tombstone;
+        var prefab = ZNetScene.instance != null ? ZNetScene.instance.GetPrefab(PrefabName) : null;
         if (prefab == null) {
-            Plugin.Logger.LogError("DownedMarker.Spawn: player has no tombstone prefab");
+            Plugin.Logger.LogError($"DownedMarker.Spawn: prefab '{PrefabName}' is not registered");
             return;
         }
 
         var go = Object.Instantiate(prefab, player.GetCenterPoint(), player.transform.rotation);
         var nview = go.GetComponent<ZNetView>();
         if (nview == null || !nview.IsValid()) {
-            Plugin.Logger.LogError("DownedMarker.Spawn: tombstone has no valid ZNetView");
+            Plugin.Logger.LogError("DownedMarker.Spawn: marker has no valid ZNetView");
             return;
         }
 
         var markerZdo = nview.GetZDO();
         var playerZdo = player.m_nview.GetZDO();
 
-        // Flag it as a downed marker so every client converts it (green, no loot).
-        markerZdo.Set(DownedKeys.IsDownedMarker, true);
+        markerZdo.Set(DownedKeys.IsDownedMarker, true); // distinguishes from real graves
         markerZdo.Set(DownedKeys.PlayerZdoId, playerZdo.m_uid);
         markerZdo.Set(DownedKeys.OwnerPlayerID, player.GetPlayerID()); // stable across rejoin
         markerZdo.Set(ZDOVars.s_ownerName, player.GetPlayerName());   // world text
@@ -92,18 +92,13 @@ public class DownedMarker : MonoBehaviour {
 
         playerZdo.Set(DownedKeys.MarkerZdoId, markerZdo.m_uid);
 
-        // Vanilla tombstone "drop-in" pop (Setup normally does this; the marker
-        // is not a loot grave so Setup is never called).
+        // Vanilla tombstone "drop-in" pop (TombStone.Setup normally does this;
+        // our marker has no TombStone script).
         var body = go.GetComponent<Rigidbody>();
         if (body != null) body.linearVelocity = new Vector3(0f, 5f, 0f);
         LastPopVelY = body != null ? body.linearVelocity.y : 0f;
 
-        // Convert immediately on the owner (TombStone.Start postfix converts on
-        // every other client; Convert is idempotent).
-        var tomb = go.GetComponent<TombStone>();
-        if (tomb != null) Convert(tomb);
-
-        Plugin.Logger.LogInfo($"Spawned downed marker (tombstone) for {player.GetPlayerName()}, ZDOID {markerZdo.m_uid}");
+        Plugin.Logger.LogInfo($"Spawned downed marker for {player.GetPlayerName()}, ZDOID {markerZdo.m_uid}");
     }
 
     /// <summary>
@@ -143,35 +138,77 @@ public class DownedMarker : MonoBehaviour {
     }
 
     // =====================================================================
-    //  Conversion (tombstone -> green revive marker)
+    //  Prefab registration (our own networked prefab -- no tombstone conversion)
     // =====================================================================
 
-    public static void Convert(TombStone tomb) {
-        if (tomb == null) return;
-        var go = tomb.gameObject;
-        if (go.GetComponent<DownedMarker>() != null) return; // idempotent
-        go.AddComponent<DownedMarker>().StripAndTint(tomb);
-    }
+    /// <summary>Networked prefab name; must be identical (and registered) on every client.</summary>
+    public const string PrefabName = "RevivalRevived_DownedMarker";
 
-    private void StripAndTint(TombStone tomb) {
-        m_nview = GetComponent<ZNetView>();
+    private static GameObject? s_prefabHolder;
+    private static GameObject? s_prefabTemplate;
 
-        // Show the downed player's name like a vanilla grave would. TombStone
-        // normally does this in Start(), but on the spawning client we convert
-        // (and destroy the script) before Start ever runs, leaving the prefab
-        // default "GRAVE".
-        if (tomb.m_worldText != null && m_nview != null && m_nview.IsValid()) {
-            var ownerName = m_nview.GetZDO().GetString(ZDOVars.s_ownerName);
-            if (!string.IsNullOrEmpty(ownerName)) tomb.m_worldText.text = ownerName;
+    /// <summary>
+    /// Build (once) and register the marker prefab with a ZNetScene. Called from
+    /// the ZNetScene.Awake postfix on every client, so remote instances are
+    /// instantiated directly from this prefab via the ZDO prefab hash -- no
+    /// spawn-a-tombstone-and-convert hack, no TombStone.Start patch.
+    ///
+    /// The template is the vanilla player tombstone cloned under an inactive
+    /// holder (so no Awake runs), with the loot/despawn scripts removed and our
+    /// components pre-attached.
+    /// </summary>
+    public static void RegisterPrefab(ZNetScene scene) {
+        if (s_prefabTemplate == null) {
+            var original = FindTombstonePrefab(scene);
+            if (original == null) {
+                Plugin.Logger.LogError("DownedMarker: no TombStone prefab found to derive the marker from");
+                return;
+            }
+
+            s_prefabHolder = new GameObject("RevivalRevived_Prefabs");
+            s_prefabHolder.SetActive(false); // children never run Awake here
+            Object.DontDestroyOnLoad(s_prefabHolder);
+
+            var template = Object.Instantiate(original, s_prefabHolder.transform);
+            template.name = PrefabName;
+
+            // Strip the loot-grave behaviour (Awake never ran; safe to remove).
+            var tomb = template.GetComponent<TombStone>();
+            if (tomb != null) Object.DestroyImmediate(tomb);
+            var container = template.GetComponent<Container>();
+            if (container != null) Object.DestroyImmediate(container);
+
+            // Our behaviour, baked into the prefab.
+            template.AddComponent<DownedMarker>();
+            template.AddComponent<ReviveInteractable>();
+
+            s_prefabTemplate = template;
+            Plugin.Logger.LogInfo($"DownedMarker: built prefab '{PrefabName}' from '{original.name}'");
         }
 
-        // Stop the loot/despawn behaviour: cancel the repeating despawn check and
-        // remove the TombStone + Container scripts (both are Hoverable/Interactable
-        // and would otherwise compete with our ReviveInteractable).
-        tomb.CancelInvoke();
-        var container = GetComponent<Container>();
-        if (container != null) Destroy(container);
-        Destroy(tomb);
+        var hash = PrefabName.GetStableHashCode();
+        if (!scene.m_namedPrefabs.ContainsKey(hash)) {
+            scene.m_prefabs.Add(s_prefabTemplate);
+            scene.m_namedPrefabs.Add(hash, s_prefabTemplate);
+            Plugin.Logger.LogInfo($"DownedMarker: registered prefab '{PrefabName}' with ZNetScene");
+        }
+    }
+
+    private static GameObject? FindTombstonePrefab(ZNetScene scene) {
+        var byName = scene.GetPrefab("Player_tombstone");
+        if (byName != null && byName.GetComponent<TombStone>() != null) return byName;
+        foreach (var p in scene.m_prefabs) {
+            if (p != null && p.GetComponent<TombStone>() != null) return p;
+        }
+        return null;
+    }
+
+    // =====================================================================
+    //  Instance behaviour (runs on every client that instantiates the prefab)
+    // =====================================================================
+
+    private void Awake() {
+        m_nview = GetComponent<ZNetView>();
 
         // The grave's ember particles and glow flare only belong on a REAL
         // (unrevivable) tombstone -- their absence marks this as revivable, and
@@ -180,12 +217,16 @@ public class DownedMarker : MonoBehaviour {
 
         CaptureAccents();
         ApplyBlend(0f);
+    }
 
-        if (GetComponent<ReviveInteractable>() == null) {
-            gameObject.AddComponent<ReviveInteractable>();
-        }
-
-        Plugin.Logger.LogInfo($"DownedMarker: converted tombstone -> green marker (lights={TintedLights}, mats={TintedMaterials})");
+    private void Start() {
+        // Show the downed player's name like a vanilla grave would (the ZDO is
+        // populated by the time Start runs, on the spawner and on remotes).
+        if (m_nview == null || !m_nview.IsValid()) return;
+        var ownerName = m_nview.GetZDO().GetString(ZDOVars.s_ownerName);
+        if (string.IsNullOrEmpty(ownerName)) return;
+        var worldText = GetComponentInChildren<TMPro.TMP_Text>(true);
+        if (worldText != null) worldText.text = ownerName;
     }
 
     /// <summary>Turn off ember particle systems and flare/glow children.</summary>

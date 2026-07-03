@@ -477,14 +477,18 @@ public class E2ERunner : MonoBehaviour {
         bool hasRevivable = player.GetComponent<Revivable>() != null;
         var marker = player.FindDownedMarker();
         bool markerExists = marker != null;
-        bool markerIsTombstone = marker != null && marker.GetComponent<ZNetView>() != null;
+        // The marker must be an instance of OUR registered prefab (not a
+        // converted tombstone) with a valid network view.
+        bool markerIsOurPrefab = marker != null && marker.GetComponent<ZNetView>() != null
+            && marker.name.StartsWith(DownedMarker.PrefabName)
+            && marker.GetComponent<TombStone>() == null;
         bool noRagdolls = UnityEngine.Object.FindObjectsOfType<Ragdoll>().Length == 0;
         bool visualHidden = player.m_visual != null && !player.m_visual.activeSelf;
         bool poofPlayed = PlayerDownedExtensions.LastPoofCount > 0;
         bool poofSmall = PlayerDownedExtensions.LastPoofSourceName.IndexOf("Greyling", StringComparison.OrdinalIgnoreCase) >= 0;
-        Record(T, downed && notDead && hasRevivable && markerExists && markerIsTombstone && noRagdolls && poofPlayed && poofSmall && popped,
+        Record(T, downed && notDead && hasRevivable && markerExists && markerIsOurPrefab && noRagdolls && poofPlayed && poofSmall && popped,
             $"downed={downed} notDead={notDead} revivable={hasRevivable} marker={markerExists} " +
-            $"tombstone={markerIsTombstone} noRagdolls={noRagdolls} visualHidden={visualHidden} " +
+            $"ourPrefab={markerIsOurPrefab} noRagdolls={noRagdolls} visualHidden={visualHidden} " +
             $"poof={PlayerDownedExtensions.LastPoofCount} poofSrc={PlayerDownedExtensions.LastPoofSourceName} popVelY={popVelY:F1}");
     }
 
