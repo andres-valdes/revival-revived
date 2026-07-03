@@ -4,19 +4,18 @@ using UnityEngine;
 namespace RevivalRevived.Components;
 
 /// <summary>
-/// Static manager tracking which players are downed and managing
-/// the ragdoll ↔ player linkage.
+/// Static manager tracking which players are downed and managing the
+/// downed-marker (a green, floating tombstone) ↔ player linkage.
 ///
 /// Networking model: all state lives on ZDO fields, so it replicates to every
-/// client. The *owner* of a downed player's ZDO (the machine simulating that
-/// player) is the single authority: it enters/clears the downed state, runs the
-/// revive timer, and revives. Other clients only read ZDO state and send revive
-/// *requests* via routed RPC -- they never mutate the downed player's ZDO
-/// directly (non-owner ZDO writes don't replicate and get reverted on sync).
+/// client. The *owner* of a downed player's ZDO is the single authority: it
+/// enters/clears the downed state, runs the revive timer, and revives. The
+/// downed marker is a real networked tombstone object (position replicated by
+/// the engine, floats on water) with its loot/despawn scripts stripped and a
+/// green tint -- no ragdolls are spawned anywhere. On true death the marker is
+/// removed and vanilla spawns the real (red, functional) tombstone.
 /// </summary>
 public static class DownedState {
-    /// <summary>Cached ragdoll references for fast per-frame position sync.</summary>
-    private static readonly Dictionary<Player, Ragdoll> s_ragdolls = new();
     /// <summary>Revive window duration in seconds.</summary>
     public const float ReviveWindow = 30f;
 
@@ -34,22 +33,21 @@ public static class DownedState {
     // ZDO field hashes (prefixed to avoid collisions)
     public static readonly int s_downed = "RevivalRevived_downed".GetStableHashCode();
     public static readonly int s_downedTime = "RevivalRevived_downedTime".GetStableHashCode();
-    public static readonly int s_ragdollID = "RevivalRevived_ragdollID".GetStableHashCode();
-    public static readonly int s_linkedPlayerID = "RevivalRevived_linkedPlayerID".GetStableHashCode();
     public static readonly int s_linkedPlayerName = "RevivalRevived_linkedPlayerName".GetStableHashCode();
 
-    /// <summary>Owner-authoritative ragdoll average body position, replicated to other clients.</summary>
-    public static readonly int s_ragdollPos = "RevivalRevived_ragdollPos".GetStableHashCode();
+    /// <summary>Marker (tombstone) ZDO flag: this tombstone is a downed marker, not a real grave.</summary>
+    public static readonly int s_isDownedMarker = "RevivalRevived_isDownedMarker".GetStableHashCode();
     /// <summary>Revive channel progress 0-1, written by the downed player's owner for hover UI.</summary>
     public static readonly int s_reviveProgress = "RevivalRevived_reviveProgress".GetStableHashCode();
 
-    // ZDOID is stored as a pair of fields (long + uint), matching Valheim's convention
-    public static readonly KeyValuePair<int, int> s_ragdollZDOID = ZDO.GetHashZDOID("RevivalRevived_ragdollZDOID");
+    // ZDOID pairs (long + uint), matching Valheim's convention.
+    public static readonly KeyValuePair<int, int> s_markerZDOID = ZDO.GetHashZDOID("RevivalRevived_markerZDOID");
     public static readonly KeyValuePair<int, int> s_playerZDOID = ZDO.GetHashZDOID("RevivalRevived_playerZDOID");
 
     /// <summary>
     /// Enter the downed state for a player. Called from CheckDeath prefix on the
-    /// owner. Spawns a ragdoll, hides the player visual, and writes ZDO fields.
+    /// owner. Spawns the green tombstone marker, hides the player visual, and
+    /// writes ZDO fields. No ragdoll is spawned.
     /// </summary>
     public static void EnterDownedState(Player player) {
         var nview = player.m_nview;
@@ -68,8 +66,8 @@ public static class DownedState {
         // Hide the player visual on every client (same idea as vanilla RPC_OnDeath)
         nview.InvokeRPC(ZNetView.Everybody, RPC_OnDowned);
 
-        // Spawn ragdoll using the player's death effects
-        SpawnDownedRagdoll(player);
+        // Spawn the green tombstone marker at the death spot.
+        SpawnDownedMarker(player);
 
         // Disable collision and freeze the player body
         player.m_collider.enabled = false;
@@ -101,7 +99,6 @@ public static class DownedState {
         // Re-enable collision and physics
         downedPlayer.m_collider.enabled = true;
         downedPlayer.m_body.isKinematic = false;
-        s_ragdolls.Remove(downedPlayer);
 
         // Clean up Revivable component
         var revivable = downedPlayer.GetComponent<Revivable>();
@@ -114,8 +111,8 @@ public static class DownedState {
         // Show the player visual again on every client
         downedPlayer.m_nview.InvokeRPC(ZNetView.Everybody, RPC_OnRevived);
 
-        // Destroy the linked ragdoll
-        DestroyLinkedRagdoll(zdo);
+        // Destroy the linked marker
+        DestroyLinkedMarker(zdo);
 
         downedPlayer.Message(MessageHud.MessageType.Center, "You have been revived!");
         var reviverName = ReviverName(reviverId);
@@ -129,8 +126,9 @@ public static class DownedState {
     }
 
     /// <summary>
-    /// Called when the revive window expires. Clears downed state and lets
-    /// vanilla death proceed on the next CheckDeath tick. Owner only.
+    /// Called when the revive window expires. Clears downed state and removes the
+    /// green marker; the CheckDeath patch then lets vanilla OnDeath fire, which
+    /// spawns the real (red, functional) tombstone. Owner only.
     /// </summary>
     public static void ExpireDownedState(Player player) {
         if (player == null || !player.m_nview.IsValid()) return;
@@ -142,14 +140,13 @@ public static class DownedState {
         // Re-enable collision and physics
         player.m_collider.enabled = true;
         player.m_body.isKinematic = false;
-        s_ragdolls.Remove(player);
 
         // Clean up Revivable component
         var revivable = player.GetComponent<Revivable>();
         if (revivable != null) Object.Destroy(revivable);
 
-        // Destroy the linked ragdoll (vanilla will spawn its own on real death)
-        DestroyLinkedRagdoll(zdo);
+        // Destroy the linked marker (vanilla will spawn the real tombstone on death)
+        DestroyLinkedMarker(zdo);
 
         Plugin.Logger.LogInfo($"{player.GetPlayerName()} revive window expired, proceeding to death");
     }
@@ -189,11 +186,10 @@ public static class DownedState {
     }
 
     /// <summary>
-    /// Find the Player instance associated with a ragdoll's ZDO. Works on any
-    /// client; returns null if the linked player isn't instantiated locally.
+    /// Find the Player linked to a downed-marker's ZDO. Works on any client.
     /// </summary>
-    public static Player? FindLinkedPlayer(ZDO ragdollZdo) {
-        var playerZdoId = ragdollZdo.GetZDOID(s_playerZDOID);
+    public static Player? FindLinkedPlayer(ZDO markerZdo) {
+        var playerZdoId = markerZdo.GetZDOID(s_playerZDOID);
         if (playerZdoId == ZDOID.None) return null;
 
         var playerZdo = ZDOMan.instance.GetZDO(playerZdoId);
@@ -205,69 +201,60 @@ public static class DownedState {
         return nview.GetComponent<Player>();
     }
 
-    private static void SpawnDownedRagdoll(Player player) {
-        // Use the player's death effects to spawn the ragdoll
-        var effects = player.m_deathEffects.Create(
-            player.transform.position,
-            player.transform.rotation,
-            player.transform
-        );
-
-        foreach (var go in effects) {
-            var ragdoll = go.GetComponent<Ragdoll>();
-            if (ragdoll == null) continue;
-
-            // Set up ragdoll physics from player velocity
-            var velocity = player.m_body.linearVelocity;
-            ragdoll.Setup(velocity, 0f, 0f, 0f, null);
-
-            // Link ragdoll → player via ZDO (must happen before Start so the patch picks it up)
-            var ragdollZdo = ragdoll.m_nview.GetZDO();
-            var playerZdo = player.m_nview.GetZDO();
-
-            ragdollZdo.Set(s_playerZDOID, playerZdo.m_uid);
-            ragdollZdo.Set(s_linkedPlayerName, player.GetPlayerName());
-            ragdollZdo.Set(s_downedTime, (float)ZNet.instance.GetTimeSeconds());
-            ragdollZdo.Set(s_ragdollPos, ragdoll.GetAverageBodyPosition());
-
-            // Link player → ragdoll via ZDO
-            playerZdo.Set(s_ragdollZDOID, ragdollZdo.m_uid);
-
-            // Cache for per-frame position sync
-            s_ragdolls[player] = ragdoll;
-
-            Plugin.Logger.LogInfo($"Spawned downed ragdoll for {player.GetPlayerName()}, ZDOID: {ragdollZdo.m_uid}");
-            break; // Only need the first ragdoll
-        }
-    }
-
     /// <summary>
-    /// Sync a downed player's transform to their ragdoll. Called from the owner's
-    /// LateUpdate patch. The player position is itself ZDO-replicated by Valheim,
-    /// so this keeps every client's downed player co-located with the ragdoll.
+    /// Find the downed-marker tombstone linked to a player, on any client.
     /// </summary>
-    public static void SyncPlayerToRagdoll(Player player) {
-        if (!s_ragdolls.TryGetValue(player, out var ragdoll) || ragdoll == null) return;
-
-        var ragPos = ragdoll.GetAverageBodyPosition();
-        player.transform.position = ragPos;
-        player.m_body.position = ragPos;
+    public static GameObject? FindLinkedMarker(Player player) {
+        if (player?.m_nview == null || !player.m_nview.IsValid()) return null;
+        var markerId = player.m_nview.GetZDO().GetZDOID(s_markerZDOID);
+        if (markerId == ZDOID.None) return null;
+        return ZNetScene.instance.FindInstance(markerId);
     }
 
-    private static void DestroyLinkedRagdoll(ZDO playerZdo) {
-        var ragdollZdoId = playerZdo.GetZDOID(s_ragdollZDOID);
-        if (ragdollZdoId == ZDOID.None) return;
+    private static void SpawnDownedMarker(Player player) {
+        var prefab = player.m_tombstone;
+        if (prefab == null) {
+            Plugin.Logger.LogError("SpawnDownedMarker: player has no tombstone prefab");
+            return;
+        }
 
-        // Clear the link
-        playerZdo.Set(s_ragdollZDOID, ZDOID.None);
+        var go = Object.Instantiate(prefab, player.GetCenterPoint(), player.transform.rotation);
+        var nview = go.GetComponent<ZNetView>();
+        if (nview == null || !nview.IsValid()) {
+            Plugin.Logger.LogError("SpawnDownedMarker: tombstone has no valid ZNetView");
+            return;
+        }
 
-        // FindInstance(ZDOID) returns GameObject
-        var ragdollGo = ZNetScene.instance.FindInstance(ragdollZdoId);
-        if (ragdollGo != null) {
-            var nview = ragdollGo.GetComponent<ZNetView>();
-            if (nview != null) {
-                nview.Destroy();
-            }
+        var markerZdo = nview.GetZDO();
+        var playerZdo = player.m_nview.GetZDO();
+
+        // Flag it as a downed marker so every client converts it (green, no loot).
+        markerZdo.Set(s_isDownedMarker, true);
+        markerZdo.Set(s_playerZDOID, playerZdo.m_uid);
+        markerZdo.Set(ZDOVars.s_ownerName, player.GetPlayerName()); // world text
+        markerZdo.Set(s_downedTime, (float)ZNet.instance.GetTimeSeconds());
+
+        // Link player → marker.
+        playerZdo.Set(s_markerZDOID, markerZdo.m_uid);
+
+        // Convert immediately on the owner (TombStone.Start postfix also converts
+        // on every client, incl. this one; DownedMarker.Convert is idempotent).
+        var tomb = go.GetComponent<TombStone>();
+        if (tomb != null) DownedMarker.Convert(tomb);
+
+        Plugin.Logger.LogInfo($"Spawned downed marker (tombstone) for {player.GetPlayerName()}, ZDOID {markerZdo.m_uid}");
+    }
+
+    private static void DestroyLinkedMarker(ZDO playerZdo) {
+        var markerId = playerZdo.GetZDOID(s_markerZDOID);
+        if (markerId == ZDOID.None) return;
+
+        playerZdo.Set(s_markerZDOID, ZDOID.None);
+
+        var go = ZNetScene.instance.FindInstance(markerId);
+        if (go != null) {
+            var nview = go.GetComponent<ZNetView>();
+            if (nview != null) nview.Destroy();
         }
     }
 }

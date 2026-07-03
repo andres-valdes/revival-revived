@@ -18,7 +18,7 @@ namespace RevivalRevived.E2E;
 ///   host     multiplayer host: opens a CustomSocket world, downs itself, waits
 ///            to be revived by a connecting client.
 ///   client   multiplayer client: joins the host, detects the downed remote
-///            player, validates ragdoll position sync, and revives them.
+///            player, validates the replicated marker, and revives them.
 ///
 /// Bounded by a hard timeout so it can never hang a CI job.
 /// </summary>
@@ -148,17 +148,17 @@ public class E2ERunner : MonoBehaviour {
             downed != null ? $"name={downed.GetPlayerName()}" : "none");
         if (downed == null) yield break;
 
-        // --- Validate server-authoritative, network-lerped ragdoll sync ------
-        yield return StartCoroutine(ValidateRagdollSync(downed));
+        // --- Validate the replicated green marker (tombstone), no ragdoll ----
+        yield return StartCoroutine(ValidateMarker(downed));
 
         // --- Revive the downed remote player across the network --------------
         Log("E2E[client]: channeling revive on remote player...");
         waited = 0f;
         float interactSeconds = 0f;
         while (waited < 20f && DownedState.IsDowned(downed)) {
-            var ragdoll = FindLinkedRagdoll(downed);
-            if (ragdoll != null) {
-                var interactable = ragdoll.GetComponentInChildren<ReviveInteractable>();
+            var marker = DownedState.FindLinkedMarker(downed);
+            if (marker != null) {
+                var interactable = marker.GetComponentInChildren<ReviveInteractable>();
                 if (interactable != null) {
                     interactable.Interact(me, hold: true, alt: false);
                     interactSeconds += Time.unscaledDeltaTime;
@@ -172,43 +172,47 @@ public class E2ERunner : MonoBehaviour {
             $"downed={DownedState.IsDowned(downed)} channelSecs={interactSeconds:F1}");
     }
 
-    private IEnumerator ValidateRagdollSync(Player downed) {
-        const string T = "client_ragdoll_sync";
-        var ragdoll = FindLinkedRagdoll(downed);
-        if (ragdoll == null) {
-            // brief retry: the ragdoll ZDO may still be streaming in
+    private IEnumerator ValidateMarker(Player downed) {
+        const string T = "client_marker_sync";
+        GameObject? marker = DownedState.FindLinkedMarker(downed);
+        if (marker == null) {
+            // brief retry: the marker ZDO may still be streaming in
             float w = 0f;
-            while (w < 5f && ragdoll == null) { ragdoll = FindLinkedRagdoll(downed); w += Time.unscaledDeltaTime; yield return null; }
+            while (w < 6f && marker == null) { marker = DownedState.FindLinkedMarker(downed); w += Time.unscaledDeltaTime; yield return null; }
         }
-        if (ragdoll == null) { Record(T, false, "ragdoll not found on client"); yield break; }
+        if (marker == null) { Record(T, false, "marker not found on client"); yield break; }
 
-        // Sample over time: the ragdoll's average body position should track the
-        // authoritative synced ZDO value and stay near the (also synced) player,
-        // and motion should be smooth (lerped), not teleporting.
-        float maxTrackErr = 0f, maxPlayerDist = 0f, maxFrameJump = 0f;
-        Vector3 prev = ragdoll.GetAverageBodyPosition();
+        // The replicated tombstone marker should: exist as a networked object,
+        // be flagged as a downed marker, be converted to green, be near the
+        // downed player, hold position steadily (no per-frame teleport), and have
+        // NO ragdoll anywhere.
+        var nview = marker.GetComponent<ZNetView>();
+        bool isMarkerFlag = nview != null && nview.GetZDO().GetBool(DownedState.s_isDownedMarker);
+        var dm = marker.GetComponent<DownedMarker>();
+        bool green = dm != null && dm.IsGreen();
+        bool hasInteractable = marker.GetComponentInChildren<ReviveInteractable>() != null;
+        bool noTombScript = marker.GetComponent<TombStone>() == null;
+
+        float maxPlayerDist = 0f, maxFrameJump = 0f;
+        Vector3 prev = marker.transform.position;
         int samples = 0;
         float t = 0f;
         while (t < 2.5f && DownedState.IsDowned(downed)) {
-            var synced = ragdoll.m_nview.GetZDO().GetVec3(DownedState.s_ragdollPos, Vector3.zero);
-            var avg = ragdoll.GetAverageBodyPosition();
-            if (synced != Vector3.zero) maxTrackErr = Mathf.Max(maxTrackErr, Vector3.Distance(avg, synced));
-            maxPlayerDist = Mathf.Max(maxPlayerDist, Vector3.Distance(avg, downed.transform.position));
-            maxFrameJump = Mathf.Max(maxFrameJump, Vector3.Distance(avg, prev));
-            prev = avg;
+            var pos = marker.transform.position;
+            maxPlayerDist = Mathf.Max(maxPlayerDist, Vector3.Distance(pos, downed.transform.position));
+            maxFrameJump = Mathf.Max(maxFrameJump, Vector3.Distance(pos, prev));
+            prev = pos;
             samples++;
             t += Time.unscaledDeltaTime;
             yield return null;
         }
+        bool noRagdolls = UnityEngine.Object.FindObjectsOfType<Ragdoll>().Length == 0;
 
-        // Tracking error small (converges to authority), ragdoll near player,
-        // and no per-frame teleport (smooth lerp).
-        bool tracks = maxTrackErr < 1.0f;
-        bool nearPlayer = maxPlayerDist < 4.0f;
-        bool smooth = maxFrameJump < 2.0f;
-        bool pass = samples > 5 && tracks && nearPlayer && smooth;
+        bool pass = samples > 5 && isMarkerFlag && green && hasInteractable && noTombScript
+                    && maxPlayerDist < 5f && maxFrameJump < 2f && noRagdolls;
         Record(T, pass,
-            $"samples={samples} maxTrackErr={maxTrackErr:F2} maxPlayerDist={maxPlayerDist:F2} maxFrameJump={maxFrameJump:F2}");
+            $"samples={samples} markerFlag={isMarkerFlag} green={green} interactable={hasInteractable} " +
+            $"noTombScript={noTombScript} maxPlayerDist={maxPlayerDist:F2} maxFrameJump={maxFrameJump:F2} noRagdolls={noRagdolls}");
     }
 
     // =====================================================================
@@ -235,12 +239,19 @@ public class E2ERunner : MonoBehaviour {
         player.SetHealth(0f);
         float waited = 0f;
         while (waited < 5f && !DownedState.IsDowned(player)) { waited += Time.unscaledDeltaTime; yield return null; }
+        // Let the marker's deferred Start/convert run.
+        yield return new WaitForSecondsRealtime(0.5f);
         bool downed = DownedState.IsDowned(player);
         bool notDead = !player.IsDead();
         bool hasRevivable = player.GetComponent<Revivable>() != null;
-        bool ragdollExists = FindLinkedRagdoll(player) != null;
-        Record(T, downed && notDead && hasRevivable && ragdollExists,
-            $"downed={downed} notDead={notDead} revivable={hasRevivable} ragdoll={ragdollExists}");
+        var marker = DownedState.FindLinkedMarker(player);
+        bool markerExists = marker != null;
+        bool markerIsTombstone = marker != null && marker.GetComponent<ZNetView>() != null;
+        bool noRagdolls = UnityEngine.Object.FindObjectsOfType<Ragdoll>().Length == 0;
+        bool visualHidden = player.m_visual != null && !player.m_visual.activeSelf;
+        Record(T, downed && notDead && hasRevivable && markerExists && markerIsTombstone && noRagdolls,
+            $"downed={downed} notDead={notDead} revivable={hasRevivable} marker={markerExists} " +
+            $"tombstone={markerIsTombstone} noRagdolls={noRagdolls} visualHidden={visualHidden}");
     }
 
     private IEnumerator Test_DownedConstraints() {
@@ -249,26 +260,29 @@ public class E2ERunner : MonoBehaviour {
         if (!DownedState.IsDowned(player)) { Record(T, false, "precondition: not downed"); yield break; }
         bool cannotMove = !player.CanMove();
         bool kinematic = player.m_body != null && player.m_body.isKinematic;
-        var ragdoll = FindLinkedRagdoll(player);
-        bool interactableFound = false, hoverOk = false;
-        if (ragdoll != null) {
-            var interactable = ragdoll.GetComponentInChildren<ReviveInteractable>();
+        var marker = DownedState.FindLinkedMarker(player);
+        bool interactableFound = false, hoverOk = false, green = false, stripped = false;
+        if (marker != null) {
+            var interactable = marker.GetComponentInChildren<ReviveInteractable>();
             interactableFound = interactable != null;
+            var dm = marker.GetComponent<DownedMarker>();
+            green = dm != null && dm.IsGreen();
+            stripped = marker.GetComponent<TombStone>() == null && marker.GetComponent<Container>() == null;
             if (interactable != null) {
                 var hover = interactable.GetHoverText();
                 hoverOk = !string.IsNullOrEmpty(hover) && hover.IndexOf("Revive", StringComparison.OrdinalIgnoreCase) >= 0;
                 Log($"E2E[{T}]: hover = \"{hover.Replace("\n", " | ")}\"");
             }
         }
-        Record(T, cannotMove && kinematic && interactableFound && hoverOk,
-            $"cannotMove={cannotMove} kinematic={kinematic} interactable={interactableFound} hoverOk={hoverOk}");
+        Record(T, cannotMove && kinematic && interactableFound && hoverOk && green && stripped,
+            $"cannotMove={cannotMove} kinematic={kinematic} interactable={interactableFound} hoverOk={hoverOk} green={green} stripped={stripped}");
     }
 
     private IEnumerator Test_ReviveRestores() {
         const string T = "revive_restores";
         var player = Player.m_localPlayer;
         if (!DownedState.IsDowned(player)) { Record(T, false, "precondition: not downed"); yield break; }
-        var ragdollBefore = FindLinkedRagdoll(player);
+        var markerBefore = DownedState.FindLinkedMarker(player);
 
         DownedState.Revive(player);
         yield return new WaitForSecondsRealtime(0.5f);
@@ -284,29 +298,61 @@ public class E2ERunner : MonoBehaviour {
         bool collider = player.m_collider != null && player.m_collider.enabled;
         bool notKinematic = player.m_body != null && !player.m_body.isKinematic;
         yield return new WaitForSecondsRealtime(0.5f);
-        bool ragdollGone = ragdollBefore == null || !ragdollBefore;
+        bool markerGone = markerBefore == null || !markerBefore;
 
-        Record(T, notDowned && revivableGone && healthy && canMove && visualBack && collider && notKinematic && ragdollGone,
+        Record(T, notDowned && revivableGone && healthy && canMove && visualBack && collider && notKinematic && markerGone,
             $"notDowned={notDowned} revivableGone={revivableGone} hp={player.GetHealth():F0} canMove={canMove} " +
-            $"visualBack={visualBack} collider={collider} notKinematic={notKinematic} ragdollGone={ragdollGone}");
+            $"visualBack={visualBack} collider={collider} notKinematic={notKinematic} markerGone={markerGone}");
     }
 
     private IEnumerator Test_ExpiryKills() {
-        const string T = "expiry_kills";
+        const string T = "expiry_kills_real_tombstone";
         var player = Player.m_localPlayer;
         if (player.IsDead()) { Record(T, false, "already dead"); yield break; }
         player.SetHealth(player.GetMaxHealth());
+
+        // Give the player an item so vanilla OnDeath spawns a real (functional) tombstone.
+        GiveTestItem(player);
         yield return null;
+
         player.SetHealth(0f);
         float waited = 0f;
         while (waited < 5f && !DownedState.IsDowned(player)) { waited += Time.unscaledDeltaTime; yield return null; }
         if (!DownedState.IsDowned(player)) { Record(T, false, "could not re-down"); yield break; }
+        yield return new WaitForSecondsRealtime(0.5f);
+        var markerBefore = DownedState.FindLinkedMarker(player);
+
+        // Force the window to have expired.
         var zdo = player.m_nview.GetZDO();
         zdo.Set(DownedState.s_downedTime, (float)ZNet.instance.GetTimeSeconds() - DownedState.ReviveWindow - 5f);
         waited = 0f;
         while (waited < 10f && !player.IsDead()) { player.SetHealth(0f); waited += Time.unscaledDeltaTime; yield return null; }
-        Record(T, player.IsDead() && !DownedState.IsDowned(player),
-            $"dead={player.IsDead()} notDowned={!DownedState.IsDowned(player)}");
+        yield return new WaitForSecondsRealtime(0.5f);
+
+        bool dead = player.IsDead();
+        bool notDowned = !DownedState.IsDowned(player);
+        bool markerGone = markerBefore == null || !markerBefore;
+        // A real, non-marker tombstone should now exist (the death grave).
+        bool realTombstone = false;
+        foreach (var t in UnityEngine.Object.FindObjectsOfType<TombStone>()) {
+            var nv = t.GetComponent<ZNetView>();
+            if (nv != null && nv.IsValid() && !nv.GetZDO().GetBool(DownedState.s_isDownedMarker)) { realTombstone = true; break; }
+        }
+        bool noRagdolls = UnityEngine.Object.FindObjectsOfType<Ragdoll>().Length == 0;
+
+        Record(T, dead && notDowned && markerGone && realTombstone && noRagdolls,
+            $"dead={dead} notDowned={notDowned} markerGone={markerGone} realTombstone={realTombstone} noRagdolls={noRagdolls}");
+    }
+
+    private static void GiveTestItem(Player player) {
+        try {
+            if (ObjectDB.instance == null) return;
+            var prefab = ObjectDB.instance.GetItemPrefab("Wood");
+            if (prefab == null) return;
+            player.GetInventory().AddItem(prefab, 1);
+        } catch (Exception e) {
+            Log("E2E: GiveTestItem failed: " + e.Message);
+        }
     }
 
     // =====================================================================
@@ -404,15 +450,6 @@ public class E2ERunner : MonoBehaviour {
             if (DownedState.IsDowned(p)) return p;
         }
         return null;
-    }
-
-    private static Ragdoll? FindLinkedRagdoll(Player player) {
-        if (player?.m_nview == null || !player.m_nview.IsValid()) return null;
-        var zdo = player.m_nview.GetZDO();
-        var ragdollZdoId = zdo.GetZDOID(DownedState.s_ragdollZDOID);
-        if (ragdollZdoId == ZDOID.None) return null;
-        var go = ZNetScene.instance.FindInstance(ragdollZdoId);
-        return go != null ? go.GetComponent<Ragdoll>() : null;
     }
 
     private void Record(string name, bool pass, string detail) {

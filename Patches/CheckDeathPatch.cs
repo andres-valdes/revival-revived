@@ -35,7 +35,14 @@ static class CheckDeathPatch {
         if (DownedState.IsDowned(player)) {
             // Already downed -- check if window expired
             if (DownedState.IsReviveWindowExpired(player)) {
-                // Window expired: clear downed state, let OnDeath fire
+                // Window expired: clear downed state, let OnDeath fire.
+                // Defensive: Player.OnDeath dereferences m_lastHit (switch on
+                // m_lastHit.m_hitType) before spawning the tombstone, so a death
+                // with no recorded hit would NRE and skip the grave. In normal
+                // play the downing damage sets m_lastHit; guard the edge case.
+                if (player.m_lastHit == null) {
+                    player.m_lastHit = new HitData { m_hitType = HitData.HitType.Self };
+                }
                 DownedState.ExpireDownedState(player);
                 return true; // proceed to OnDeath
             }

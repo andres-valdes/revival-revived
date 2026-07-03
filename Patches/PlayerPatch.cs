@@ -80,7 +80,7 @@ static class CharacterUpdateMotionPatch {
 ///   - attach a <see cref="Revivable"/> if the ZDO says downed and we lack one
 ///     (the Revivable destroys itself once the ZDO says not-downed);
 ///   - keep the model hidden on every client;
-///   - on the owner, keep the body frozen and pinned to the ragdoll.
+///   - on the owner, keep the body frozen in place at the death spot.
 /// </summary>
 [HarmonyPatch(typeof(Player), "LateUpdate")]
 static class PlayerLateUpdatePatch {
@@ -97,9 +97,10 @@ static class PlayerLateUpdatePatch {
         }
 
         if (__instance.m_nview != null && __instance.m_nview.IsValid() && __instance.m_nview.IsOwner()) {
+            // Keep the downed player frozen in place at the death spot; the green
+            // tombstone marker is a separate, self-syncing networked object.
             __instance.m_collider.enabled = false;
             __instance.m_body.isKinematic = true;
-            DownedState.SyncPlayerToRagdoll(__instance);
         }
     }
 }
