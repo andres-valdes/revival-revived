@@ -76,6 +76,11 @@ public class Revivable : MonoBehaviour {
 
         if (channeling) {
             m_holdTimer += Time.deltaTime;
+            // Pause the bleed-out window while a revive is actively channeled:
+            // push the downed clock forward by the same amount of time that
+            // passes. This freezes both the expiry countdown (player ZDO) and
+            // the green->red marker gradient (marker ZDO).
+            PauseWindowClock(Time.deltaTime);
         } else {
             m_holdTimer = Mathf.Max(0f, m_holdTimer - Time.deltaTime * 2f);
         }
@@ -87,6 +92,21 @@ public class Revivable : MonoBehaviour {
         if (m_holdTimer >= DownedState.ReviveDuration) {
             DownedState.Revive(m_player, m_lastReviverId);
             // Revive() destroys this component.
+        }
+    }
+
+    /// <summary>Shift the downed clock forward by dt on the player and marker ZDOs.</summary>
+    private void PauseWindowClock(float dt) {
+        var zdo = m_nview!.GetZDO();
+        zdo.Set(DownedState.s_downedTime, zdo.GetFloat(DownedState.s_downedTime) + dt);
+
+        var marker = DownedState.FindLinkedMarker(m_player!);
+        if (marker != null) {
+            var mnv = marker.GetComponent<ZNetView>();
+            if (mnv != null && mnv.IsValid()) {
+                var mzdo = mnv.GetZDO();
+                mzdo.Set(DownedState.s_downedTime, mzdo.GetFloat(DownedState.s_downedTime) + dt);
+            }
         }
     }
 

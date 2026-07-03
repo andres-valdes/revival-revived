@@ -41,6 +41,9 @@ public class DownedMarker : MonoBehaviour {
     public int TintedLights => m_lights.Count;
     public int TintedMaterials => m_tinted.Count;
 
+    /// <summary>Ember/glow effect objects disabled on this marker (test hook).</summary>
+    public int DisabledEffects { get; private set; }
+
     /// <summary>0 = fully green (window fresh), 1 = original grave red (window elapsed). Test hook.</summary>
     public float CurrentBlend { get; private set; }
 
@@ -62,6 +65,11 @@ public class DownedMarker : MonoBehaviour {
         if (container != null) Destroy(container);
         Destroy(tomb);
 
+        // The grave's ember particles and glow flare only belong on a REAL
+        // (unrevivable) tombstone -- their absence marks this as revivable, and
+        // their presence on the replacing grave signals the window has closed.
+        DisableGraveEffects();
+
         CaptureAccents();
         ApplyBlend(0f);
 
@@ -70,6 +78,22 @@ public class DownedMarker : MonoBehaviour {
         }
 
         Plugin.Logger.LogInfo($"DownedMarker: converted tombstone -> green marker (lights={TintedLights}, mats={TintedMaterials})");
+    }
+
+    /// <summary>Turn off ember particle systems and flare/glow children.</summary>
+    private void DisableGraveEffects() {
+        foreach (var ps in GetComponentsInChildren<ParticleSystem>(includeInactive: true)) {
+            ps.Stop(withChildren: true, ParticleSystemStopBehavior.StopEmittingAndClear);
+            ps.gameObject.SetActive(false);
+            DisabledEffects++;
+        }
+        foreach (var t in GetComponentsInChildren<Transform>(includeInactive: true)) {
+            var n = t.name.ToLowerInvariant();
+            if ((n.Contains("flare") || n.Contains("glow")) && t.gameObject.activeSelf) {
+                t.gameObject.SetActive(false);
+                DisabledEffects++;
+            }
+        }
     }
 
     /// <summary>Find the red accent sources and remember their original colours.</summary>

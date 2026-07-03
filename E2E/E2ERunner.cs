@@ -444,21 +444,28 @@ public class E2ERunner : MonoBehaviour {
         bool cannotMove = !player.CanMove();
         bool kinematic = player.m_body != null && player.m_body.isKinematic;
         var marker = DownedState.FindLinkedMarker(player);
-        bool interactableFound = false, hoverOk = false, green = false, stripped = false;
+        bool interactableFound = false, hoverOk = false, green = false, stripped = false, noEmbers = false;
+        int disabledFx = 0;
         if (marker != null) {
             var interactable = marker.GetComponentInChildren<ReviveInteractable>();
             interactableFound = interactable != null;
             var dm = marker.GetComponent<DownedMarker>();
             green = dm != null && dm.IsGreen();
+            disabledFx = dm != null ? dm.DisabledEffects : 0;
             stripped = marker.GetComponent<TombStone>() == null && marker.GetComponent<Container>() == null;
+            // Ember particles/glow must be OFF while revivable (they are the
+            // "truly dead" indicator, reserved for the real grave).
+            noEmbers = disabledFx > 0
+                && marker.GetComponentsInChildren<ParticleSystem>(false).Length == 0;
             if (interactable != null) {
                 var hover = interactable.GetHoverText();
                 hoverOk = !string.IsNullOrEmpty(hover) && hover.IndexOf("Revive", StringComparison.OrdinalIgnoreCase) >= 0;
                 Log($"E2E[{T}]: hover = \"{hover.Replace("\n", " | ")}\"");
             }
         }
-        Record(T, cannotMove && kinematic && interactableFound && hoverOk && green && stripped,
-            $"cannotMove={cannotMove} kinematic={kinematic} interactable={interactableFound} hoverOk={hoverOk} green={green} stripped={stripped}");
+        Record(T, cannotMove && kinematic && interactableFound && hoverOk && green && stripped && noEmbers,
+            $"cannotMove={cannotMove} kinematic={kinematic} interactable={interactableFound} hoverOk={hoverOk} " +
+            $"green={green} stripped={stripped} noEmbers={noEmbers} disabledFx={disabledFx}");
     }
 
     /// <summary>
@@ -474,6 +481,7 @@ public class E2ERunner : MonoBehaviour {
         if (rev == null) { Record(T, false, "no Revivable"); yield break; }
 
         // Channel for a while (well below the 4s hold time).
+        float remainingBefore = DownedState.GetRemainingTime(player);
         float t = 0f, maxProg = 0f, maxFill = 0f;
         bool uiSeen = false;
         while (t < 1.5f) {
@@ -483,6 +491,10 @@ public class E2ERunner : MonoBehaviour {
             t += Time.unscaledDeltaTime;
             yield return null;
         }
+        // The bleed-out window must PAUSE while channeling: ~1.5s elapsed but the
+        // remaining time should be (nearly) unchanged.
+        float remainingAfter = DownedState.GetRemainingTime(player);
+        bool windowPaused = remainingBefore - remainingAfter < 0.6f;
         bool partial = maxProg > 0.05f && maxProg < 0.9f;
         bool stillDowned = DownedState.IsDowned(player);
 
@@ -492,9 +504,10 @@ public class E2ERunner : MonoBehaviour {
         bool decayed = DownedState.GetReviveProgress(player) <= 0.01f;
         bool uiHidden = !ReviveProgressUI.Visible;
 
-        Record(T, partial && stillDowned && uiSeen && decayed && uiHidden,
+        Record(T, partial && stillDowned && uiSeen && decayed && uiHidden && windowPaused,
             $"maxProg={maxProg:F2} partial={partial} stillDowned={stillDowned} uiSeen={uiSeen} " +
-            $"maxFill={maxFill:F2} decayed={decayed} uiHidden={uiHidden}");
+            $"maxFill={maxFill:F2} decayed={decayed} uiHidden={uiHidden} " +
+            $"windowPaused={windowPaused} remBefore={remainingBefore:F1} remAfter={remainingAfter:F1}");
     }
 
     /// <summary>
@@ -648,7 +661,7 @@ public class E2ERunner : MonoBehaviour {
         bool markerGone = markerBefore == null || !markerBefore;
         // A real, non-marker tombstone should now exist -- standing exactly where
         // the marker stood, with no second drop-in pop (velocity ~ zero).
-        bool realTombstone = false, inPlace = false, noPop = false;
+        bool realTombstone = false, inPlace = false, noPop = false, embersOnGrave = false;
         foreach (var t in UnityEngine.Object.FindObjectsOfType<TombStone>()) {
             var nv = t.GetComponent<ZNetView>();
             if (nv == null || !nv.IsValid() || nv.GetZDO().GetBool(DownedState.s_isDownedMarker)) continue;
@@ -656,13 +669,15 @@ public class E2ERunner : MonoBehaviour {
             inPlace = markerPos != Vector3.zero && Vector3.Distance(t.transform.position, markerPos) < 2f;
             var rb = t.GetComponent<Rigidbody>();
             noPop = rb == null || rb.linearVelocity.y < 1f;
+            // The real grave keeps its embers/glow -- the "truly dead" signal.
+            embersOnGrave = t.GetComponentsInChildren<ParticleSystem>(false).Length > 0;
             break;
         }
         bool noRagdolls = UnityEngine.Object.FindObjectsOfType<Ragdoll>().Length == 0;
 
-        Record(T, dead && notDowned && markerGone && realTombstone && inPlace && noPop && noRagdolls,
+        Record(T, dead && notDowned && markerGone && realTombstone && inPlace && noPop && embersOnGrave && noRagdolls,
             $"dead={dead} notDowned={notDowned} markerGone={markerGone} realTombstone={realTombstone} " +
-            $"inPlace={inPlace} noPop={noPop} noRagdolls={noRagdolls}");
+            $"inPlace={inPlace} noPop={noPop} embersOnGrave={embersOnGrave} noRagdolls={noRagdolls}");
     }
 
     private static void GiveTestItem(Player player) {
