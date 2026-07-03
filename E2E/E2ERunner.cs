@@ -175,13 +175,13 @@ public class E2ERunner : MonoBehaviour {
         float interactSeconds = 0f, maxUiFill = 0f;
         bool uiSeen = false;
         while (waited < 20f && DownedState.IsDowned(downed)) {
-            var marker = DownedState.FindLinkedMarker(downed);
-            if (marker != null) {
-                var interactable = marker.GetComponentInChildren<ReviveInteractable>();
-                if (interactable != null) {
-                    interactable.Interact(me, hold: true, alt: false);
-                    interactSeconds += Time.unscaledDeltaTime;
-                }
+            // Discover the interactable the way the game does -- via the hover
+            // raycast -- so a blocked/unhoverable marker fails this test instead
+            // of being papered over by direct component access.
+            var interactable = FindInteractableViaHoverRay(downed, me);
+            if (interactable != null) {
+                interactable.Interact(me, hold: true, alt: false);
+                interactSeconds += Time.unscaledDeltaTime;
             }
             if (ReviveProgressUI.Visible) { uiSeen = true; maxUiFill = Mathf.Max(maxUiFill, ReviveProgressUI.Fill); }
             waited += Time.unscaledDeltaTime;
@@ -288,11 +288,44 @@ public class E2ERunner : MonoBehaviour {
         }
         bool noRagdolls = UnityEngine.Object.FindObjectsOfType<Ragdoll>().Length == 0;
 
+        // -- Regressions found by manual play ---------------------------------
+        // 1) The downed corpse must not collide on this (remote) client.
+        bool corpseColliderOff = downed.m_collider == null || !downed.m_collider.enabled;
+        // 2) The marker must be REACHABLE by the real hover raycast: cast through
+        //    Player.m_interactMask toward the marker; the FIRST hit must resolve
+        //    to the ReviveInteractable, not the invisible player corpse
+        //    (FindHoverObject stops at the first hit).
+        var me = Player.m_localPlayer;
+        bool hoverRayHitsMarker = false, hoverBlockedByCorpse = false, hoverTextOk = false;
+        var mpos = marker.transform.position + Vector3.up * 0.3f;
+        var origin = mpos + new Vector3(1.8f, 1.2f, 0f);
+        var hits = Physics.RaycastAll(origin, (mpos - origin).normalized, 6f, me.m_interactMask);
+        System.Array.Sort(hits, (a, b) => a.distance.CompareTo(b.distance));
+        if (hits.Length > 0) {
+            var first = hits[0].collider;
+            hoverRayHitsMarker = first.GetComponentInParent<ReviveInteractable>() != null;
+            hoverBlockedByCorpse = first.GetComponentInParent<Player>() == downed;
+            var inter = first.GetComponentInParent<ReviveInteractable>();
+            if (inter != null) {
+                var hover = inter.GetHoverText();
+                hoverTextOk = !string.IsNullOrEmpty(hover) && hover.IndexOf("Revive", StringComparison.OrdinalIgnoreCase) >= 0;
+            }
+        }
+        // 3) No floating health bar for the invisible downed player.
+        bool hudHidden = true;
+        if (EnemyHud.instance != null) {
+            var huds = Traverse.Create(EnemyHud.instance).Field("m_huds").GetValue<System.Collections.IDictionary>();
+            hudHidden = huds == null || !huds.Contains(downed);
+        }
+
         bool pass = samples > 5 && isMarkerFlag && green && hasInteractable && noTombScript
-                    && maxPlayerDist < 5f && maxFrameJump < 2f && noRagdolls;
+                    && maxPlayerDist < 5f && maxFrameJump < 2f && noRagdolls
+                    && corpseColliderOff && hoverRayHitsMarker && !hoverBlockedByCorpse && hoverTextOk && hudHidden;
         Record(T, pass,
             $"samples={samples} markerFlag={isMarkerFlag} green={green} interactable={hasInteractable} " +
-            $"noTombScript={noTombScript} maxPlayerDist={maxPlayerDist:F2} maxFrameJump={maxFrameJump:F2} noRagdolls={noRagdolls}");
+            $"noTombScript={noTombScript} maxPlayerDist={maxPlayerDist:F2} maxFrameJump={maxFrameJump:F2} noRagdolls={noRagdolls} " +
+            $"corpseColliderOff={corpseColliderOff} hoverRayHitsMarker={hoverRayHitsMarker} " +
+            $"hoverBlockedByCorpse={hoverBlockedByCorpse} hoverTextOk={hoverTextOk} hudHidden={hudHidden}");
     }
 
     // =====================================================================
@@ -813,6 +846,23 @@ public class E2ERunner : MonoBehaviour {
     // =====================================================================
     //  Helpers
     // =====================================================================
+    /// <summary>
+    /// Locate the downed player's revive interactable the way the real game
+    /// does: a raycast through Player.m_interactMask toward the marker, taking
+    /// the FIRST hit (Player.FindHoverObject stops at the first hit, so anything
+    /// blocking -- like a still-active corpse collider -- makes this return null).
+    /// </summary>
+    private static ReviveInteractable? FindInteractableViaHoverRay(Player downed, Player me) {
+        var marker = DownedState.FindLinkedMarker(downed);
+        if (marker == null) return null;
+        var target = marker.transform.position + Vector3.up * 0.3f;
+        var origin = target + new Vector3(1.8f, 1.2f, 0f);
+        var hits = Physics.RaycastAll(origin, (target - origin).normalized, 6f, me.m_interactMask);
+        if (hits.Length == 0) return null;
+        System.Array.Sort(hits, (a, b) => a.distance.CompareTo(b.distance));
+        return hits[0].collider.GetComponentInParent<ReviveInteractable>();
+    }
+
     private static Player? FindDownedRemotePlayer(Player me) {
         foreach (var p in Player.GetAllPlayers()) {
             if (p == null || p == me) continue;

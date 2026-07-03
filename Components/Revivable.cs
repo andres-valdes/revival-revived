@@ -48,8 +48,13 @@ public class Revivable : MonoBehaviour {
         if (m_nview == null || !m_nview.IsValid() || m_player == null) return;
 
         // ZDO-driven lifecycle: if the player is no longer downed (revived or
-        // expired by the owner, replicated to us), tear ourselves down.
+        // expired by the owner, replicated to us), tear ourselves down -- and
+        // restore the collider we disabled on this client (the owner's Revive()
+        // does it locally, but remotes must undo it themselves).
         if (!DownedState.IsDowned(m_player)) {
+            if (!m_player.IsDead() && m_player.m_collider != null) {
+                m_player.m_collider.enabled = true;
+            }
             Destroy(this);
             return;
         }

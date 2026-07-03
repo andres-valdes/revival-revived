@@ -98,10 +98,17 @@ static class PlayerLateUpdatePatch {
             __instance.m_visual.SetActive(false);
         }
 
+        // The corpse must not collide on ANY client: a live collider makes the
+        // invisible body block movement and eats the hover raycast before it can
+        // reach the marker (Player.FindHoverObject stops at the first hit).
+        if (__instance.m_collider != null && __instance.m_collider.enabled) {
+            __instance.m_collider.enabled = false;
+        }
+
         if (__instance.m_nview != null && __instance.m_nview.IsValid() && __instance.m_nview.IsOwner()) {
             // Keep the downed player frozen in place at the death spot; the green
             // tombstone marker is a separate, self-syncing networked object.
-            __instance.m_collider.enabled = false;
+            // (Remote bodies are already kinematic via ZSyncTransform.)
             __instance.m_body.isKinematic = true;
         }
     }
@@ -132,6 +139,20 @@ static class PlayerOnRespawnPatch {
             return false;
         }
         return true;
+    }
+}
+
+/// <summary>
+/// Hide the floating name/health bar for downed players -- the body is
+/// invisible, so a hovering health bar over empty air (or over the marker)
+/// is wrong; the green tombstone marker is the downed indicator.
+/// </summary>
+[HarmonyPatch(typeof(EnemyHud), "TestShow")]
+static class EnemyHudHideDownedPatch {
+    static void Postfix(Character c, ref bool __result) {
+        if (__result && c is Player p && DownedState.IsDowned(p)) {
+            __result = false;
+        }
     }
 }
 
