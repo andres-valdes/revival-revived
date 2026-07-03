@@ -146,5 +146,7 @@ static class PlayerOnSpawnedPatch {
             && __instance.GetComponent<DisconnectDeathCheck>() == null) {
             __instance.gameObject.AddComponent<DisconnectDeathCheck>();
         }
+        // Make sure the revive progress circle exists once we're in a world.
+        ReviveProgressUI.Ensure();
     }
 }

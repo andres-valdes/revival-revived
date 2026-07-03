@@ -16,16 +16,27 @@ namespace RevivalRevived.Components;
 /// removed and vanilla spawns the real (red, functional) tombstone.
 /// </summary>
 public static class DownedState {
-    /// <summary>Revive window duration in seconds (overridable via RR_E2E_WINDOW for tests).</summary>
-    public static readonly float ReviveWindow = ReadWindowOverride();
+    /// <summary>Revive window duration in seconds (config, overridable via RR_E2E_WINDOW for tests).</summary>
+    public static float ReviveWindow {
+        get {
+            if (s_windowEnvOverride > 0f) return s_windowEnvOverride;
+            return Plugin.ReviveWindowCfg?.Value ?? 30f;
+        }
+    }
+
+    private static readonly float s_windowEnvOverride = ReadWindowOverride();
 
     private static float ReadWindowOverride() {
         var s = System.Environment.GetEnvironmentVariable("RR_E2E_WINDOW");
-        return float.TryParse(s, out var v) && v > 0f ? v : 30f;
+        return float.TryParse(s, out var v) && v > 0f ? v : 0f;
     }
 
-    /// <summary>How long the channeled revive interaction takes.</summary>
-    public const float ReviveDuration = 4f;
+    /// <summary>How long the channeled revive interaction takes (config, Hold mode).</summary>
+    public static float ReviveDuration => Mathf.Max(0.1f, Plugin.ReviveHoldTimeCfg?.Value ?? 4f);
+
+    /// <summary>True when a single press (no hold) completes the revive.</summary>
+    public static bool PressMode =>
+        Plugin.ReviveModeCfg != null && Plugin.ReviveModeCfg.Value == ReviveModeType.Press;
 
     /// <summary>Health percentage restored on revive (0-1).</summary>
     public const float ReviveHealthFraction = 0.25f;

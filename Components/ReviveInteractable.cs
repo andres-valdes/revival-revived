@@ -27,8 +27,9 @@ public class ReviveInteractable : MonoBehaviour, Hoverable, Interactable {
         var revivable = FindRevivable();
         if (revivable == null) return "";
 
+        var verb = DownedState.PressMode ? "" : "Hold ";
         var text = $"{revivable.PlayerName} (downed)\n";
-        text += $"[<color=yellow><b>$KEY_Use</b></color>] Revive ({revivable.RemainingTime:F0}s)";
+        text += $"[<color=yellow><b>{verb}$KEY_Use</b></color>] Revive ({revivable.RemainingTime:F0}s)";
 
         var progress = revivable.Progress;
         if (progress > 0f) {
@@ -44,7 +45,8 @@ public class ReviveInteractable : MonoBehaviour, Hoverable, Interactable {
     }
 
     public bool Interact(Humanoid user, bool hold, bool alt) {
-        if (!hold) return false;
+        // Hold mode consumes held-interact; Press mode accepts a single press too.
+        if (!hold && !DownedState.PressMode) return false;
         if (user is not Player reviver) return false;
 
         var revivable = FindRevivable();

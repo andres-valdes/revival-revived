@@ -67,13 +67,20 @@ public class Revivable : MonoBehaviour {
         }
 
         bool channeling = Time.time - m_lastChannelTime < ChannelTimeout;
+
+        // Press mode: any channel input completes the revive immediately.
+        if (DownedState.PressMode) {
+            if (channeling) DownedState.Revive(m_player, m_lastReviverId);
+            return;
+        }
+
         if (channeling) {
             m_holdTimer += Time.deltaTime;
         } else {
             m_holdTimer = Mathf.Max(0f, m_holdTimer - Time.deltaTime * 2f);
         }
 
-        // Publish progress for hover UI on every client.
+        // Publish progress for the progress UI / hover text on every client.
         m_nview.GetZDO().Set(DownedState.s_reviveProgress,
             Mathf.Clamp01(m_holdTimer / DownedState.ReviveDuration));
 

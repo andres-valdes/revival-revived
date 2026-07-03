@@ -168,7 +168,8 @@ public class E2ERunner : MonoBehaviour {
         // --- Revive the downed remote player across the network --------------
         Log("E2E[client]: channeling revive on remote player...");
         waited = 0f;
-        float interactSeconds = 0f;
+        float interactSeconds = 0f, maxUiFill = 0f;
+        bool uiSeen = false;
         while (waited < 20f && DownedState.IsDowned(downed)) {
             var marker = DownedState.FindLinkedMarker(downed);
             if (marker != null) {
@@ -178,12 +179,15 @@ public class E2ERunner : MonoBehaviour {
                     interactSeconds += Time.unscaledDeltaTime;
                 }
             }
+            if (ReviveProgressUI.Visible) { uiSeen = true; maxUiFill = Mathf.Max(maxUiFill, ReviveProgressUI.Fill); }
             waited += Time.unscaledDeltaTime;
             yield return null;
         }
         bool revivedRemote = !DownedState.IsDowned(downed);
         Record("client_revived_remote", revivedRemote,
             $"downed={DownedState.IsDowned(downed)} channelSecs={interactSeconds:F1}");
+        // The radial progress UI must have shown on the reviver while channeling.
+        Record("client_progress_ui", uiSeen && maxUiFill > 0.3f, $"uiSeen={uiSeen} maxFill={maxUiFill:F2}");
     }
 
     /// <summary>
@@ -301,7 +305,9 @@ public class E2ERunner : MonoBehaviour {
 
         yield return StartCoroutine(Test_LethalDamageDowns());
         yield return StartCoroutine(Test_DownedConstraints());
+        yield return StartCoroutine(Test_HoldProgressAndUI());
         yield return StartCoroutine(Test_ReviveRestores());
+        yield return StartCoroutine(Test_PressModeRevives());
         yield return StartCoroutine(Test_DisconnectDeath());
         yield return StartCoroutine(WaitForAlivePlayer());
         yield return StartCoroutine(Test_ExpiryKills());
@@ -350,6 +356,77 @@ public class E2ERunner : MonoBehaviour {
         }
         Record(T, cannotMove && kinematic && interactableFound && hoverOk && green && stripped,
             $"cannotMove={cannotMove} kinematic={kinematic} interactable={interactableFound} hoverOk={hoverOk} green={green} stripped={stripped}");
+    }
+
+    /// <summary>
+    /// Hold mode: channeling for ~1.5s should produce partial progress, show the
+    /// radial progress UI, and then decay back to 0 (UI hidden) once released.
+    /// (Player must be downed from the previous test.)
+    /// </summary>
+    private IEnumerator Test_HoldProgressAndUI() {
+        const string T = "hold_progress_and_ui";
+        var player = Player.m_localPlayer;
+        if (!DownedState.IsDowned(player)) { Record(T, false, "precondition: not downed"); yield break; }
+        var rev = player.GetComponent<Revivable>();
+        if (rev == null) { Record(T, false, "no Revivable"); yield break; }
+
+        // Channel for a while (well below the 4s hold time).
+        float t = 0f, maxProg = 0f, maxFill = 0f;
+        bool uiSeen = false;
+        while (t < 1.5f) {
+            rev.ChannelRevive(0L);
+            maxProg = Mathf.Max(maxProg, DownedState.GetReviveProgress(player));
+            if (ReviveProgressUI.Visible) { uiSeen = true; maxFill = Mathf.Max(maxFill, ReviveProgressUI.Fill); }
+            t += Time.unscaledDeltaTime;
+            yield return null;
+        }
+        bool partial = maxProg > 0.05f && maxProg < 0.9f;
+        bool stillDowned = DownedState.IsDowned(player);
+
+        // Stop channeling; progress should decay and the UI hide.
+        t = 0f;
+        while (t < 3f) { t += Time.unscaledDeltaTime; yield return null; }
+        bool decayed = DownedState.GetReviveProgress(player) <= 0.01f;
+        bool uiHidden = !ReviveProgressUI.Visible;
+
+        Record(T, partial && stillDowned && uiSeen && decayed && uiHidden,
+            $"maxProg={maxProg:F2} partial={partial} stillDowned={stillDowned} uiSeen={uiSeen} " +
+            $"maxFill={maxFill:F2} decayed={decayed} uiHidden={uiHidden}");
+    }
+
+    /// <summary>
+    /// Press mode (config): a single channel tick (as a single press produces)
+    /// revives immediately -- no hold required.
+    /// </summary>
+    private IEnumerator Test_PressModeRevives() {
+        const string T = "press_mode_revives";
+        var player = Player.m_localPlayer;
+        Plugin.ReviveModeCfg.Value = ReviveModeType.Press;
+
+        player.SetHealth(player.GetMaxHealth());
+        yield return null;
+        player.SetHealth(0f);
+        float w = 0f;
+        while (w < 5f && !DownedState.IsDowned(player)) { w += Time.unscaledDeltaTime; yield return null; }
+        if (!DownedState.IsDowned(player)) {
+            Plugin.ReviveModeCfg.Value = ReviveModeType.Hold;
+            Record(T, false, "could not down"); yield break;
+        }
+        yield return new WaitForSecondsRealtime(0.5f);
+
+        // One press worth of channel input.
+        var rev = player.GetComponent<Revivable>();
+        rev?.ChannelRevive(0L);
+
+        w = 0f;
+        while (w < 3f && DownedState.IsDowned(player)) { w += Time.unscaledDeltaTime; yield return null; }
+        yield return new WaitForSecondsRealtime(0.5f);
+
+        bool revived = !DownedState.IsDowned(player) && !player.IsDead() && player.GetHealth() > 0f;
+        bool markerGone = DownedState.FindMarkerForPlayer(player.GetPlayerID()) == null;
+
+        Plugin.ReviveModeCfg.Value = ReviveModeType.Hold; // restore for later tests
+        Record(T, revived && markerGone, $"revived={revived} hp={player.GetHealth():F0} markerGone={markerGone}");
     }
 
     private IEnumerator Test_ReviveRestores() {
