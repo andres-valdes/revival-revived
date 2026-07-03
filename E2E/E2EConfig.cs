@@ -23,6 +23,13 @@ public static class E2EConfig {
     public static string Scenario => (Environment.GetEnvironmentVariable("RR_E2E_SCENARIO") ?? "revive").ToLowerInvariant();
     public static bool IsRejoinScenario => Scenario == "rejoin";
 
+    /// <summary>
+    /// Manual play mode: use the harness only to auto-host/auto-join over the
+    /// CustomSocket backend, then hand control to the human -- no scenario tests,
+    /// no hard timeout, no auto-quit.
+    /// </summary>
+    public static bool Manual => Environment.GetEnvironmentVariable("RR_E2E_MANUAL") == "1";
+
     public static int Port {
         get {
             var s = Environment.GetEnvironmentVariable("RR_E2E_PORT");

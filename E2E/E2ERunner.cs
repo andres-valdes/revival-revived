@@ -44,6 +44,7 @@ public class E2ERunner : MonoBehaviour {
     private void Start() => StartCoroutine(RunAll());
 
     private void Update() {
+        if (E2EConfig.Manual) return; // human is playing; never time out or quit
         _elapsed += Time.unscaledDeltaTime;
         if (_elapsed > HardTimeoutSeconds && _started) {
             Log("E2E: HARD TIMEOUT reached, aborting");
@@ -53,7 +54,9 @@ public class E2ERunner : MonoBehaviour {
 
     private IEnumerator RunAll() {
         _started = true;
-        Log($"E2E: run starting (role='{E2EConfig.Role}')");
+        Log($"E2E: run starting (role='{E2EConfig.Role}' manual={E2EConfig.Manual})");
+
+        if (E2EConfig.Manual) { yield return StartCoroutine(RunManual()); yield break; }
 
         if (Environment.GetEnvironmentVariable("RR_E2E_DEMO") == "1") yield return StartCoroutine(RunDemo());
         else if (E2EConfig.IsHost) yield return StartCoroutine(RunHost());
@@ -290,6 +293,16 @@ public class E2ERunner : MonoBehaviour {
         Record(T, pass,
             $"samples={samples} markerFlag={isMarkerFlag} green={green} interactable={hasInteractable} " +
             $"noTombScript={noTombScript} maxPlayerDist={maxPlayerDist:F2} maxFrameJump={maxFrameJump:F2} noRagdolls={noRagdolls}");
+    }
+
+    // =====================================================================
+    //  MANUAL (RR_E2E_MANUAL=1): auto-host/auto-join, then the human plays.
+    // =====================================================================
+    private IEnumerator RunManual() {
+        yield return StartCoroutine(AutoStart());
+        yield return StartCoroutine(WaitForPlayerInWorld());
+        Log($"E2E: manual play mode ({E2EConfig.Role}) -- no tests, game is yours");
+        while (true) yield return null; // idle; the human closes the game
     }
 
     // =====================================================================
@@ -713,7 +726,9 @@ public class E2ERunner : MonoBehaviour {
             var fejd = FejdStartup.instance;
 
             if (E2EConfig.IsHost) {
-                var profile = GetOrCreateProfile("e2e_host", "E2EHost");
+                var profile = GetOrCreateProfile(
+                    Environment.GetEnvironmentVariable("RR_E2E_PROFILE") ?? "e2e_host",
+                    Environment.GetEnvironmentVariable("RR_E2E_CHARNAME") ?? "E2EHost");
                 Game.SetProfile(profile.GetFilename(), profile.m_fileSource);
                 var world = World.GetCreateWorld(E2EConfig.WorldName, FileHelpers.FileSource.Local);
                 ZNet.m_onlineBackend = OnlineBackendType.CustomSocket;
@@ -721,7 +736,9 @@ public class E2ERunner : MonoBehaviour {
                 ZNet.ResetServerHost();
                 Log($"E2E[host]: world '{world.m_name}', CustomSocket port {E2EConfig.Port}, loading scene");
             } else if (E2EConfig.IsClient) {
-                var profile = GetOrCreateProfile("e2e_client", "E2EClient");
+                var profile = GetOrCreateProfile(
+                    Environment.GetEnvironmentVariable("RR_E2E_PROFILE") ?? "e2e_client",
+                    Environment.GetEnvironmentVariable("RR_E2E_CHARNAME") ?? "E2EClient");
                 Game.SetProfile(profile.GetFilename(), profile.m_fileSource);
                 ZNet.m_onlineBackend = OnlineBackendType.CustomSocket;
                 ZNet.SetServer(server: false, openServer: false, publicServer: false, "", "", null);
