@@ -113,16 +113,22 @@ public class E2ERunner : MonoBehaviour {
         Record("host_downed", DownedState.IsDowned(player), $"downed={DownedState.IsDowned(player)} dead={player.IsDead()}");
         if (!DownedState.IsDowned(player)) yield break;
 
-        // Wait to be revived by the client (before the window expires).
+        // Wait to be revived by the client (before the window expires), watching
+        // the peer-authoritative progress replicate in from the marker ZDO.
         Log("E2E[host]: waiting to be revived by client...");
         waited = 0f;
+        float maxSeenProgress = 0f;
         while (waited < 28f && DownedState.IsDowned(player) && !player.IsDead()) {
+            maxSeenProgress = Mathf.Max(maxSeenProgress, DownedState.GetReviveProgress(player));
             waited += Time.unscaledDeltaTime;
             yield return null;
         }
         bool revived = !DownedState.IsDowned(player) && !player.IsDead() && player.GetHealth() > 0f;
         Record("host_revived_by_client", revived,
             $"downed={DownedState.IsDowned(player)} dead={player.IsDead()} hp={player.GetHealth():F0}");
+        // The reviver's progress must replicate to the host (more than a single
+        // stray update): we should see it climb well past the halfway point.
+        Record("host_saw_progress", maxSeenProgress > 0.5f, $"maxSeenProgress={maxSeenProgress:F2}");
 
         // Let the client finish its assertions before we quit.
         yield return new WaitForSecondsRealtime(6f);
@@ -172,7 +178,7 @@ public class E2ERunner : MonoBehaviour {
         // --- Revive the downed remote player across the network --------------
         Log("E2E[client]: channeling revive on remote player...");
         waited = 0f;
-        float interactSeconds = 0f, maxUiFill = 0f;
+        float interactSeconds = 0f, maxUiFill = 0f, lastProg = 0f, worstRegression = 0f;
         bool uiSeen = false;
         while (waited < 20f && DownedState.IsDowned(downed)) {
             // Discover the interactable the way the game does -- via the hover
@@ -183,6 +189,15 @@ public class E2ERunner : MonoBehaviour {
                 interactable.Interact(me, hold: true, alt: false);
                 interactSeconds += Time.unscaledDeltaTime;
             }
+            // Our locally-authoritative progress must NEVER glitch backwards to a
+            // stale nonzero value while continuously channeling (a replicated
+            // snapshot clobbering local writes shows up here). The single reset
+            // to 0 when the hold completes is legitimate and excluded.
+            var prog = DownedState.GetReviveProgress(downed);
+            if (prog > 0.02f && prog < lastProg - 0.01f) {
+                worstRegression = Mathf.Max(worstRegression, lastProg - prog);
+            }
+            lastProg = prog;
             if (ReviveProgressUI.Visible) { uiSeen = true; maxUiFill = Mathf.Max(maxUiFill, ReviveProgressUI.Fill); }
             waited += Time.unscaledDeltaTime;
             yield return null;
@@ -190,8 +205,11 @@ public class E2ERunner : MonoBehaviour {
         bool revivedRemote = !DownedState.IsDowned(downed);
         Record("client_revived_remote", revivedRemote,
             $"downed={DownedState.IsDowned(downed)} channelSecs={interactSeconds:F1}");
-        // The radial progress UI must have shown on the reviver while channeling.
-        Record("client_progress_ui", uiSeen && maxUiFill > 0.3f, $"uiSeen={uiSeen} maxFill={maxUiFill:F2}");
+        // The radial progress UI must have shown on the reviver while channeling,
+        // and never fought/glitched backwards to stale values.
+        bool monotonic = worstRegression < 0.05f;
+        Record("client_progress_ui", uiSeen && maxUiFill > 0.3f && monotonic,
+            $"uiSeen={uiSeen} maxFill={maxUiFill:F2} worstRegression={worstRegression:F2} monotonic={monotonic}");
 
         // Regression (manual play): after the revive, the remote player must be
         // VISIBLE and solid again on this client -- the old RPC-based restore
@@ -484,10 +502,12 @@ public class E2ERunner : MonoBehaviour {
 
         float blend0 = dm.CurrentBlend;
 
-        // Simulate half the window having elapsed (visual clock lives on the marker ZDO).
-        var mzdo = marker!.GetComponent<ZNetView>().GetZDO();
-        mzdo.Set(DownedState.s_downedTime,
-            mzdo.GetFloat(DownedState.s_downedTime) - DownedState.ReviveWindow * 0.5f);
+        // Simulate half the window having elapsed. The gradient clock is the
+        // PLAYER's downedTime (single-writer: the marker ZDO belongs to the
+        // channeling reviver's progress only).
+        var pzdo = player.m_nview.GetZDO();
+        pzdo.Set(DownedState.s_downedTime,
+            pzdo.GetFloat(DownedState.s_downedTime) - DownedState.ReviveWindow * 0.5f);
         yield return null;
         yield return null;
 
@@ -504,9 +524,13 @@ public class E2ERunner : MonoBehaviour {
         bool cannotMove = !player.CanMove();
         bool kinematic = player.m_body != null && player.m_body.isKinematic;
         var marker = DownedState.FindLinkedMarker(player);
-        bool interactableFound = false, hoverOk = false, green = false, stripped = false, noEmbers = false;
+        bool interactableFound = false, hoverOk = false, green = false, stripped = false, noEmbers = false, nameOk = false;
         int disabledFx = 0;
         if (marker != null) {
+            // The floating world text must show the player's name (vanilla grave
+            // behaviour), not the prefab default "GRAVE".
+            var worldText = marker.GetComponentInChildren<TMPro.TMP_Text>(true);
+            nameOk = worldText != null && worldText.text == player.GetPlayerName();
             var interactable = marker.GetComponentInChildren<ReviveInteractable>();
             interactableFound = interactable != null;
             var dm = marker.GetComponent<DownedMarker>();
@@ -523,9 +547,9 @@ public class E2ERunner : MonoBehaviour {
                 Log($"E2E[{T}]: hover = \"{hover.Replace("\n", " | ")}\"");
             }
         }
-        Record(T, cannotMove && kinematic && interactableFound && hoverOk && green && stripped && noEmbers,
+        Record(T, cannotMove && kinematic && interactableFound && hoverOk && green && stripped && noEmbers && nameOk,
             $"cannotMove={cannotMove} kinematic={kinematic} interactable={interactableFound} hoverOk={hoverOk} " +
-            $"green={green} stripped={stripped} noEmbers={noEmbers} disabledFx={disabledFx}");
+            $"green={green} stripped={stripped} noEmbers={noEmbers} disabledFx={disabledFx} nameOk={nameOk}");
     }
 
     /// <summary>

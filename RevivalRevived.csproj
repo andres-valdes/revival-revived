@@ -93,6 +93,10 @@
       <HintPath>$(ManagedDir)/UnityEngine.ParticleSystemModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <Reference Include="Unity.TextMeshPro">
+      <HintPath>$(ManagedDir)/Unity.TextMeshPro.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
   </ItemGroup>
 
   <!-- Copy output DLL to BepInEx/plugins after build -->

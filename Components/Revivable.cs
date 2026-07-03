@@ -84,19 +84,16 @@ public class Revivable : MonoBehaviour {
         }
     }
 
-    /// <summary>Shift the downed clock forward by dt on the player and marker ZDOs.</summary>
+    /// <summary>
+    /// Shift the downed clock forward by dt -- on OUR OWN player ZDO only. The
+    /// marker ZDO is written exclusively by the channeling reviver (progress);
+    /// writing the clock there too made two peers fight over the marker's data
+    /// revision and clobber each other's values. The marker's gradient reads the
+    /// player clock instead.
+    /// </summary>
     private void PauseWindowClock(float dt) {
         var zdo = m_nview!.GetZDO();
         zdo.Set(DownedState.s_downedTime, zdo.GetFloat(DownedState.s_downedTime) + dt);
-
-        var marker = DownedState.FindLinkedMarker(m_player!);
-        if (marker != null) {
-            var mnv = marker.GetComponent<ZNetView>();
-            if (mnv != null && mnv.IsValid()) {
-                var mzdo = mnv.GetZDO();
-                mzdo.Set(DownedState.s_downedTime, mzdo.GetFloat(DownedState.s_downedTime) + dt);
-            }
-        }
     }
 
     /// <summary>A reviver is holding the channel (routed ping from any client).</summary>

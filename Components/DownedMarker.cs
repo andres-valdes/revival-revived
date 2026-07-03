@@ -57,6 +57,15 @@ public class DownedMarker : MonoBehaviour {
     private void StripAndTint(TombStone tomb) {
         m_nview = GetComponent<ZNetView>();
 
+        // Show the downed player's name like a vanilla grave would. TombStone
+        // normally does this in Start(), but on the spawning client we convert
+        // (and destroy the script) before Start ever runs, leaving the prefab
+        // default "GRAVE".
+        if (tomb.m_worldText != null && m_nview != null && m_nview.IsValid()) {
+            var ownerName = m_nview.GetZDO().GetString(ZDOVars.s_ownerName);
+            if (!string.IsNullOrEmpty(ownerName)) tomb.m_worldText.text = ownerName;
+        }
+
         // Stop the loot/despawn behaviour: cancel the repeating despawn check and
         // remove the TombStone + Container scripts (both are Hoverable/Interactable
         // and would otherwise compete with our ReviveInteractable).
@@ -150,7 +159,17 @@ public class DownedMarker : MonoBehaviour {
     private void Update() {
         if (m_nview == null || !m_nview.IsValid()) return;
         // Blend from green back to the grave's own red as the window elapses.
-        var downedTime = m_nview.GetZDO().GetFloat(DownedState.s_downedTime);
+        //
+        // The clock is read from the LINKED PLAYER's ZDO (its owner maintains it,
+        // including the pause-while-channeling shift). The marker ZDO must have a
+        // single writer -- the channeling reviver publishing progress -- so the
+        // window clock cannot live here without ZDO revision fights.
+        var zdo = m_nview.GetZDO();
+        var playerZdoId = zdo.GetZDOID(DownedState.s_playerZDOID);
+        var playerZdo = playerZdoId != ZDOID.None ? ZDOMan.instance.GetZDO(playerZdoId) : null;
+        var downedTime = playerZdo != null
+            ? playerZdo.GetFloat(DownedState.s_downedTime)
+            : zdo.GetFloat(DownedState.s_downedTime); // fallback: spawn-time value
         var elapsed = (float)ZNet.instance.GetTimeSeconds() - downedTime;
         ApplyBlend(Mathf.Clamp01(elapsed / DownedState.ReviveWindow));
     }
