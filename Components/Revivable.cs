@@ -17,9 +17,9 @@ namespace RevivalRevived.Components;
 /// Authority split:
 ///   - The revive *timer* is peer-authoritative: the reviver's
 ///     <see cref="ReviveInteractable"/> accumulates the hold locally and sends
-///     <see cref="DownedState.RPC_DoRevive"/> when complete.
+///     <see cref="DownedKeys.RpcDoRevive"/> when complete.
 ///   - The owner only enforces the bleed-out window (expiry -> death) and
-///     pauses it while channel pings (<see cref="DownedState.RPC_Channel"/>)
+///     pauses it while channel pings (<see cref="DownedKeys.RpcChannel"/>)
 ///     are arriving.
 /// </summary>
 public class Revivable : MonoBehaviour {
@@ -31,7 +31,7 @@ public class Revivable : MonoBehaviour {
     private const float ChannelPingTimeout = 0.7f;
 
     public string PlayerName => m_player != null ? m_player.GetPlayerName() : "Viking";
-    public float RemainingTime => m_player != null ? DownedState.GetRemainingTime(m_player) : 0f;
+    public float RemainingTime => m_player != null ? m_player.GetDownedRemainingTime() : 0f;
 
     private void Awake() {
         m_player = GetComponent<Player>();
@@ -43,7 +43,7 @@ public class Revivable : MonoBehaviour {
 
         // ZDO-driven teardown: the flag cleared (revive or expiry), restore this
         // client's local changes and go away.
-        if (!DownedState.IsDowned(m_player)) {
+        if (!m_player.IsDowned()) {
             Restore();
             Destroy(this);
             return;
@@ -64,7 +64,7 @@ public class Revivable : MonoBehaviour {
 
         // Expiry-to-death is owned by the CheckDeath patch; keep health at 0 so
         // it fires once the window has elapsed.
-        if (DownedState.IsReviveWindowExpired(m_player)) {
+        if (m_player.IsReviveWindowExpired()) {
             if (m_player.GetHealth() > 0f) m_player.SetHealth(0f);
             return;
         }
@@ -93,7 +93,7 @@ public class Revivable : MonoBehaviour {
     /// </summary>
     private void PauseWindowClock(float dt) {
         var zdo = m_nview!.GetZDO();
-        zdo.Set(DownedState.s_downedTime, zdo.GetFloat(DownedState.s_downedTime) + dt);
+        zdo.Set(DownedKeys.DownedTime, zdo.GetFloat(DownedKeys.DownedTime) + dt);
     }
 
     /// <summary>A reviver is holding the channel (routed ping from any client).</summary>

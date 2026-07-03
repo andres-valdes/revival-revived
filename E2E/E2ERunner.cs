@@ -109,23 +109,23 @@ public class E2ERunner : MonoBehaviour {
         Log("E2E[host]: downing self");
         player.SetHealth(0f);
         waited = 0f;
-        while (waited < 5f && !DownedState.IsDowned(player)) { waited += Time.unscaledDeltaTime; yield return null; }
-        Record("host_downed", DownedState.IsDowned(player), $"downed={DownedState.IsDowned(player)} dead={player.IsDead()}");
-        if (!DownedState.IsDowned(player)) yield break;
+        while (waited < 5f && !player.IsDowned()) { waited += Time.unscaledDeltaTime; yield return null; }
+        Record("host_downed", player.IsDowned(), $"downed={player.IsDowned()} dead={player.IsDead()}");
+        if (!player.IsDowned()) yield break;
 
         // Wait to be revived by the client (before the window expires), watching
         // the peer-authoritative progress replicate in from the marker ZDO.
         Log("E2E[host]: waiting to be revived by client...");
         waited = 0f;
         float maxSeenProgress = 0f;
-        while (waited < 28f && DownedState.IsDowned(player) && !player.IsDead()) {
-            maxSeenProgress = Mathf.Max(maxSeenProgress, DownedState.GetReviveProgress(player));
+        while (waited < 28f && player.IsDowned() && !player.IsDead()) {
+            maxSeenProgress = Mathf.Max(maxSeenProgress, player.GetReviveProgress());
             waited += Time.unscaledDeltaTime;
             yield return null;
         }
-        bool revived = !DownedState.IsDowned(player) && !player.IsDead() && player.GetHealth() > 0f;
+        bool revived = !player.IsDowned() && !player.IsDead() && player.GetHealth() > 0f;
         Record("host_revived_by_client", revived,
-            $"downed={DownedState.IsDowned(player)} dead={player.IsDead()} hp={player.GetHealth():F0}");
+            $"downed={player.IsDowned()} dead={player.IsDead()} hp={player.GetHealth():F0}");
         // The reviver's progress must replicate to the host (more than a single
         // stray update): we should see it climb well past the halfway point.
         Record("host_saw_progress", maxSeenProgress > 0.5f, $"maxSeenProgress={maxSeenProgress:F2}");
@@ -180,7 +180,7 @@ public class E2ERunner : MonoBehaviour {
         waited = 0f;
         float interactSeconds = 0f, maxUiFill = 0f, lastProg = 0f, worstRegression = 0f;
         bool uiSeen = false;
-        while (waited < 20f && DownedState.IsDowned(downed)) {
+        while (waited < 20f && downed.IsDowned()) {
             // Discover the interactable the way the game does -- via the hover
             // raycast -- so a blocked/unhoverable marker fails this test instead
             // of being papered over by direct component access.
@@ -193,7 +193,7 @@ public class E2ERunner : MonoBehaviour {
             // stale nonzero value while continuously channeling (a replicated
             // snapshot clobbering local writes shows up here). The single reset
             // to 0 when the hold completes is legitimate and excluded.
-            var prog = DownedState.GetReviveProgress(downed);
+            var prog = downed.GetReviveProgress();
             if (prog > 0.02f && prog < lastProg - 0.01f) {
                 worstRegression = Mathf.Max(worstRegression, lastProg - prog);
             }
@@ -202,9 +202,9 @@ public class E2ERunner : MonoBehaviour {
             waited += Time.unscaledDeltaTime;
             yield return null;
         }
-        bool revivedRemote = !DownedState.IsDowned(downed);
+        bool revivedRemote = !downed.IsDowned();
         Record("client_revived_remote", revivedRemote,
-            $"downed={DownedState.IsDowned(downed)} channelSecs={interactSeconds:F1}");
+            $"downed={downed.IsDowned()} channelSecs={interactSeconds:F1}");
         // The radial progress UI must have shown on the reviver while channeling,
         // and never fought/glitched backwards to stale values.
         bool monotonic = worstRegression < 0.05f;
@@ -237,11 +237,11 @@ public class E2ERunner : MonoBehaviour {
         Log("E2E[client]: downing self before logout");
         me.SetHealth(0f);
         float w = 0f;
-        while (w < 6f && !DownedState.IsDowned(me)) { w += Time.unscaledDeltaTime; yield return null; }
-        if (!DownedState.IsDowned(me)) { Record("rejoin_pre_down", false, "could not down self"); yield break; }
+        while (w < 6f && !me.IsDowned()) { w += Time.unscaledDeltaTime; yield return null; }
+        if (!me.IsDowned()) { Record("rejoin_pre_down", false, "could not down self"); yield break; }
         yield return new WaitForSecondsRealtime(1f);
         long pid = me.GetPlayerID();
-        bool hadMarker = DownedState.FindMarkerForPlayer(pid) != null;
+        bool hadMarker = DownedMarker.FindFor(pid) != null;
         Record("rejoin_pre_down", hadMarker, $"downed=True marker={hadMarker}");
         if (!hadMarker) yield break;
 
@@ -271,27 +271,27 @@ public class E2ERunner : MonoBehaviour {
         w = 0f;
         while (w < 20f) {
             if (Player.m_localPlayer != null && Player.m_localPlayer.IsDead()) diedOnReconnect = true;
-            markerGone = DownedState.FindMarkerForPlayer(pid) == null;
+            markerGone = DownedMarker.FindFor(pid) == null;
             foreach (var t in UnityEngine.Object.FindObjectsOfType<TombStone>()) {
                 var nv = t.GetComponent<ZNetView>();
-                if (nv != null && nv.IsValid() && !nv.GetZDO().GetBool(DownedState.s_isDownedMarker)) { realTombstone = true; break; }
+                if (nv != null && nv.IsValid() && !nv.GetZDO().GetBool(DownedKeys.IsDownedMarker)) { realTombstone = true; break; }
             }
             if (diedOnReconnect && markerGone) break;
             w += Time.unscaledDeltaTime;
             yield return null;
         }
-        bool notDowned = Player.m_localPlayer == null || !DownedState.IsDowned(Player.m_localPlayer);
+        bool notDowned = Player.m_localPlayer == null || !Player.m_localPlayer.IsDowned();
         Record("reconnect_downed_dies", diedOnReconnect && markerGone && notDowned,
             $"died={diedOnReconnect} markerGone={markerGone} realTombstone={realTombstone} notDowned={notDowned}");
     }
 
     private IEnumerator ValidateMarker(Player downed) {
         const string T = "client_marker_sync";
-        GameObject? marker = DownedState.FindLinkedMarker(downed);
+        GameObject? marker = downed.FindDownedMarker();
         if (marker == null) {
             // brief retry: the marker ZDO may still be streaming in
             float w = 0f;
-            while (w < 6f && marker == null) { marker = DownedState.FindLinkedMarker(downed); w += Time.unscaledDeltaTime; yield return null; }
+            while (w < 6f && marker == null) { marker = downed.FindDownedMarker(); w += Time.unscaledDeltaTime; yield return null; }
         }
         if (marker == null) { Record(T, false, "marker not found on client"); yield break; }
 
@@ -300,7 +300,7 @@ public class E2ERunner : MonoBehaviour {
         // downed player, hold position steadily (no per-frame teleport), and have
         // NO ragdoll anywhere.
         var nview = marker.GetComponent<ZNetView>();
-        bool isMarkerFlag = nview != null && nview.GetZDO().GetBool(DownedState.s_isDownedMarker);
+        bool isMarkerFlag = nview != null && nview.GetZDO().GetBool(DownedKeys.IsDownedMarker);
         var dm = marker.GetComponent<DownedMarker>();
         bool green = dm != null && dm.IsGreen();
         bool hasInteractable = marker.GetComponentInChildren<ReviveInteractable>() != null;
@@ -310,7 +310,7 @@ public class E2ERunner : MonoBehaviour {
         Vector3 prev = marker.transform.position;
         int samples = 0;
         float t = 0f;
-        while (t < 2.5f && DownedState.IsDowned(downed)) {
+        while (t < 2.5f && downed.IsDowned()) {
             var pos = marker.transform.position;
             maxPlayerDist = Mathf.Max(maxPlayerDist, Vector3.Distance(pos, downed.transform.position));
             maxFrameJump = Mathf.Max(maxFrameJump, Vector3.Distance(pos, prev));
@@ -395,13 +395,13 @@ public class E2ERunner : MonoBehaviour {
         GiveTestItem(player);
         player.SetHealth(0f);
         float w = 0f;
-        while (w < 5f && !DownedState.IsDowned(player)) { w += Time.unscaledDeltaTime; yield return null; }
+        while (w < 5f && !player.IsDowned()) { w += Time.unscaledDeltaTime; yield return null; }
         yield return new WaitForSecondsRealtime(3.5f);
 
         // 2) Channel the full revive: the progress circle fills over HoldTime.
         Log("DEMO: channeling revive");
         w = 0f;
-        while (w < 12f && DownedState.IsDowned(player)) {
+        while (w < 12f && player.IsDowned()) {
             FindMarkerInteractable(player)?.SimulateHold();
             w += Time.unscaledDeltaTime;
             yield return null;
@@ -414,9 +414,9 @@ public class E2ERunner : MonoBehaviour {
         Log("DEMO: downing again, letting window run out");
         player.SetHealth(0f);
         w = 0f;
-        while (w < 5f && !DownedState.IsDowned(player)) { w += Time.unscaledDeltaTime; yield return null; }
+        while (w < 5f && !player.IsDowned()) { w += Time.unscaledDeltaTime; yield return null; }
         w = 0f;
-        while (w < DownedState.ReviveWindow + 10f && !player.IsDead()) { w += Time.unscaledDeltaTime; yield return null; }
+        while (w < Plugin.ReviveWindow + 10f && !player.IsDead()) { w += Time.unscaledDeltaTime; yield return null; }
         yield return new WaitForSecondsRealtime(5f);
 
         Record("demo", true, "sequence complete");
@@ -462,30 +462,30 @@ public class E2ERunner : MonoBehaviour {
         var player = Player.m_localPlayer;
         player.SetHealth(0f);
         float waited = 0f;
-        while (waited < 5f && !DownedState.IsDowned(player)) { waited += Time.unscaledDeltaTime; yield return null; }
+        while (waited < 5f && !player.IsDowned()) { waited += Time.unscaledDeltaTime; yield return null; }
 
         // Drop-in pop: the marker is launched upward at spawn (sampled by
-        // DownedState at the moment the velocity is applied -- reading the
+        // DownedMarker at the moment the velocity is applied -- reading the
         // rigidbody here races against gravity).
-        float popVelY = DownedState.LastMarkerPopVelY;
+        float popVelY = DownedMarker.LastPopVelY;
         bool popped = popVelY > 3f;
 
         // Let the marker's deferred Start/convert run.
         yield return new WaitForSecondsRealtime(0.5f);
-        bool downed = DownedState.IsDowned(player);
+        bool downed = player.IsDowned();
         bool notDead = !player.IsDead();
         bool hasRevivable = player.GetComponent<Revivable>() != null;
-        var marker = DownedState.FindLinkedMarker(player);
+        var marker = player.FindDownedMarker();
         bool markerExists = marker != null;
         bool markerIsTombstone = marker != null && marker.GetComponent<ZNetView>() != null;
         bool noRagdolls = UnityEngine.Object.FindObjectsOfType<Ragdoll>().Length == 0;
         bool visualHidden = player.m_visual != null && !player.m_visual.activeSelf;
-        bool poofPlayed = DownedState.LastPoofCount > 0;
-        bool poofSmall = DownedState.LastPoofSourceName.IndexOf("Greyling", StringComparison.OrdinalIgnoreCase) >= 0;
+        bool poofPlayed = PlayerDownedExtensions.LastPoofCount > 0;
+        bool poofSmall = PlayerDownedExtensions.LastPoofSourceName.IndexOf("Greyling", StringComparison.OrdinalIgnoreCase) >= 0;
         Record(T, downed && notDead && hasRevivable && markerExists && markerIsTombstone && noRagdolls && poofPlayed && poofSmall && popped,
             $"downed={downed} notDead={notDead} revivable={hasRevivable} marker={markerExists} " +
             $"tombstone={markerIsTombstone} noRagdolls={noRagdolls} visualHidden={visualHidden} " +
-            $"poof={DownedState.LastPoofCount} poofSrc={DownedState.LastPoofSourceName} popVelY={popVelY:F1}");
+            $"poof={PlayerDownedExtensions.LastPoofCount} poofSrc={PlayerDownedExtensions.LastPoofSourceName} popVelY={popVelY:F1}");
     }
 
     /// <summary>
@@ -496,7 +496,7 @@ public class E2ERunner : MonoBehaviour {
     private IEnumerator Test_MarkerColorGradient() {
         const string T = "marker_color_gradient";
         var player = Player.m_localPlayer;
-        var marker = DownedState.FindLinkedMarker(player);
+        var marker = player.FindDownedMarker();
         var dm = marker != null ? marker.GetComponent<DownedMarker>() : null;
         if (dm == null) { Record(T, false, "no DownedMarker"); yield break; }
 
@@ -506,8 +506,8 @@ public class E2ERunner : MonoBehaviour {
         // PLAYER's downedTime (single-writer: the marker ZDO belongs to the
         // channeling reviver's progress only).
         var pzdo = player.m_nview.GetZDO();
-        pzdo.Set(DownedState.s_downedTime,
-            pzdo.GetFloat(DownedState.s_downedTime) - DownedState.ReviveWindow * 0.5f);
+        pzdo.Set(DownedKeys.DownedTime,
+            pzdo.GetFloat(DownedKeys.DownedTime) - Plugin.ReviveWindow * 0.5f);
         yield return null;
         yield return null;
 
@@ -520,10 +520,10 @@ public class E2ERunner : MonoBehaviour {
     private IEnumerator Test_DownedConstraints() {
         const string T = "downed_constraints";
         var player = Player.m_localPlayer;
-        if (!DownedState.IsDowned(player)) { Record(T, false, "precondition: not downed"); yield break; }
+        if (!player.IsDowned()) { Record(T, false, "precondition: not downed"); yield break; }
         bool cannotMove = !player.CanMove();
         bool kinematic = player.m_body != null && player.m_body.isKinematic;
-        var marker = DownedState.FindLinkedMarker(player);
+        var marker = player.FindDownedMarker();
         bool interactableFound = false, hoverOk = false, green = false, stripped = false, noEmbers = false, nameOk = false;
         int disabledFx = 0;
         if (marker != null) {
@@ -560,19 +560,19 @@ public class E2ERunner : MonoBehaviour {
     private IEnumerator Test_HoldProgressAndUI() {
         const string T = "hold_progress_and_ui";
         var player = Player.m_localPlayer;
-        if (!DownedState.IsDowned(player)) { Record(T, false, "precondition: not downed"); yield break; }
+        if (!player.IsDowned()) { Record(T, false, "precondition: not downed"); yield break; }
         var interactable = FindMarkerInteractable(player);
         if (interactable == null) { Record(T, false, "no marker interactable"); yield break; }
 
         // Channel for a while (well below the 4s hold time). The timer is
         // peer-authoritative: it lives in the marker's ReviveInteractable on the
         // channeling client, so progress must respond with no replication lag.
-        float remainingBefore = DownedState.GetRemainingTime(player);
+        float remainingBefore = player.GetDownedRemainingTime();
         float t = 0f, maxProg = 0f, maxFill = 0f, firstProgressAt = -1f;
         bool uiSeen = false;
         while (t < 1.5f) {
             interactable.SimulateHold();
-            var prog = DownedState.GetReviveProgress(player);
+            var prog = player.GetReviveProgress();
             if (prog > 0.05f && firstProgressAt < 0f) firstProgressAt = t;
             maxProg = Mathf.Max(maxProg, prog);
             if (ReviveProgressUI.Visible) { uiSeen = true; maxFill = Mathf.Max(maxFill, ReviveProgressUI.Fill); }
@@ -582,15 +582,15 @@ public class E2ERunner : MonoBehaviour {
         bool responsive = firstProgressAt >= 0f && firstProgressAt < 0.6f;
         // The bleed-out window must PAUSE while channeling: ~1.5s elapsed but the
         // remaining time should be (nearly) unchanged.
-        float remainingAfter = DownedState.GetRemainingTime(player);
+        float remainingAfter = player.GetDownedRemainingTime();
         bool windowPaused = remainingBefore - remainingAfter < 0.6f;
         bool partial = maxProg > 0.05f && maxProg < 0.9f;
-        bool stillDowned = DownedState.IsDowned(player);
+        bool stillDowned = player.IsDowned();
 
         // Stop channeling; progress should decay and the UI hide.
         t = 0f;
         while (t < 3f) { t += Time.unscaledDeltaTime; yield return null; }
-        bool decayed = DownedState.GetReviveProgress(player) <= 0.01f;
+        bool decayed = player.GetReviveProgress() <= 0.01f;
         bool uiHidden = !ReviveProgressUI.Visible;
 
         Record(T, partial && stillDowned && uiSeen && decayed && uiHidden && windowPaused && responsive,
@@ -613,8 +613,8 @@ public class E2ERunner : MonoBehaviour {
         yield return null;
         player.SetHealth(0f);
         float w = 0f;
-        while (w < 5f && !DownedState.IsDowned(player)) { w += Time.unscaledDeltaTime; yield return null; }
-        if (!DownedState.IsDowned(player)) {
+        while (w < 5f && !player.IsDowned()) { w += Time.unscaledDeltaTime; yield return null; }
+        if (!player.IsDowned()) {
             Plugin.ReviveModeCfg.Value = ReviveModeType.Hold;
             Record(T, false, "could not down"); yield break;
         }
@@ -625,11 +625,11 @@ public class E2ERunner : MonoBehaviour {
         FindMarkerInteractable(player)?.SimulateHold();
 
         w = 0f;
-        while (w < 3f && DownedState.IsDowned(player)) { w += Time.unscaledDeltaTime; yield return null; }
+        while (w < 3f && player.IsDowned()) { w += Time.unscaledDeltaTime; yield return null; }
         yield return new WaitForSecondsRealtime(0.5f);
 
-        bool revived = !DownedState.IsDowned(player) && !player.IsDead() && player.GetHealth() > 0f;
-        bool markerGone = DownedState.FindMarkerForPlayer(player.GetPlayerID()) == null;
+        bool revived = !player.IsDowned() && !player.IsDead() && player.GetHealth() > 0f;
+        bool markerGone = DownedMarker.FindFor(player.GetPlayerID()) == null;
 
         Plugin.ReviveModeCfg.Value = ReviveModeType.Hold; // restore for later tests
         Record(T, revived && markerGone, $"revived={revived} hp={player.GetHealth():F0} markerGone={markerGone}");
@@ -638,17 +638,17 @@ public class E2ERunner : MonoBehaviour {
     private IEnumerator Test_ReviveRestores() {
         const string T = "revive_restores";
         var player = Player.m_localPlayer;
-        if (!DownedState.IsDowned(player)) { Record(T, false, "precondition: not downed"); yield break; }
-        var markerBefore = DownedState.FindLinkedMarker(player);
+        if (!player.IsDowned()) { Record(T, false, "precondition: not downed"); yield break; }
+        var markerBefore = player.FindDownedMarker();
 
-        DownedState.Revive(player);
+        player.ReviveFromDowned();
         yield return new WaitForSecondsRealtime(0.5f);
 
         bool canMove = false;
         float waitMove = 0f;
         while (waitMove < 3f) { canMove = player.CanMove(); if (canMove) break; waitMove += Time.unscaledDeltaTime; yield return null; }
 
-        bool notDowned = !DownedState.IsDowned(player);
+        bool notDowned = !player.IsDowned();
         bool revivableGone = player.GetComponent<Revivable>() == null;
         bool healthy = player.GetHealth() > 0f;
         bool visualBack = player.m_visual != null && player.m_visual.activeSelf;
@@ -680,16 +680,16 @@ public class E2ERunner : MonoBehaviour {
         // Down once -> green marker.
         player.SetHealth(0f);
         float w = 0f;
-        while (w < 5f && !DownedState.IsDowned(player)) { w += Time.unscaledDeltaTime; yield return null; }
+        while (w < 5f && !player.IsDowned()) { w += Time.unscaledDeltaTime; yield return null; }
         yield return new WaitForSecondsRealtime(0.5f);
-        var m1 = DownedState.FindLinkedMarker(player);
+        var m1 = player.FindDownedMarker();
         if (m1 == null) { Record(T, false, "no marker after down"); yield break; }
 
         // Simulate reconnect: fresh character (no downed ZDO state, full health),
         // orphan marker left behind.
         var zdo = player.m_nview.GetZDO();
-        zdo.Set(DownedState.s_downed, false);
-        zdo.Set(DownedState.s_markerZDOID, ZDOID.None);
+        zdo.Set(DownedKeys.Downed, false);
+        zdo.Set(DownedKeys.MarkerZdoId, ZDOID.None);
         var rev = player.GetComponent<Revivable>();
         if (rev != null) UnityEngine.Object.Destroy(rev);
         player.SetHealth(player.GetMaxHealth());
@@ -707,11 +707,11 @@ public class E2ERunner : MonoBehaviour {
         yield return new WaitForSecondsRealtime(0.5f);
 
         bool dead = player.IsDead();
-        bool markerGone = DownedState.FindMarkerForPlayer(player.GetPlayerID()) == null;
+        bool markerGone = DownedMarker.FindFor(player.GetPlayerID()) == null;
         bool realTombstone = false;
         foreach (var t in UnityEngine.Object.FindObjectsOfType<TombStone>()) {
             var nv = t.GetComponent<ZNetView>();
-            if (nv != null && nv.IsValid() && !nv.GetZDO().GetBool(DownedState.s_isDownedMarker)) { realTombstone = true; break; }
+            if (nv != null && nv.IsValid() && !nv.GetZDO().GetBool(DownedKeys.IsDownedMarker)) { realTombstone = true; break; }
         }
         bool noRagdolls = UnityEngine.Object.FindObjectsOfType<Ragdoll>().Length == 0;
 
@@ -734,27 +734,27 @@ public class E2ERunner : MonoBehaviour {
 
         player.SetHealth(0f);
         float waited = 0f;
-        while (waited < 5f && !DownedState.IsDowned(player)) { waited += Time.unscaledDeltaTime; yield return null; }
-        if (!DownedState.IsDowned(player)) { Record(T, false, "could not re-down"); yield break; }
+        while (waited < 5f && !player.IsDowned()) { waited += Time.unscaledDeltaTime; yield return null; }
+        if (!player.IsDowned()) { Record(T, false, "could not re-down"); yield break; }
         yield return new WaitForSecondsRealtime(0.5f);
-        var markerBefore = DownedState.FindLinkedMarker(player);
+        var markerBefore = player.FindDownedMarker();
         Vector3 markerPos = markerBefore != null ? markerBefore.transform.position : Vector3.zero;
 
         // Force the window to have expired.
         var zdo = player.m_nview.GetZDO();
-        zdo.Set(DownedState.s_downedTime, (float)ZNet.instance.GetTimeSeconds() - DownedState.ReviveWindow - 5f);
+        zdo.Set(DownedKeys.DownedTime, (float)ZNet.instance.GetTimeSeconds() - Plugin.ReviveWindow - 5f);
         waited = 0f;
         while (waited < 10f && !player.IsDead()) { player.SetHealth(0f); waited += Time.unscaledDeltaTime; yield return null; }
 
         bool dead = player.IsDead();
-        bool notDowned = !DownedState.IsDowned(player);
+        bool notDowned = !player.IsDowned();
         bool markerGone = markerBefore == null || !markerBefore;
         // A real, non-marker tombstone should now exist -- standing exactly where
         // the marker stood, with no second drop-in pop (velocity ~ zero).
         bool realTombstone = false, inPlace = false, noPop = false, embersOnGrave = false;
         foreach (var t in UnityEngine.Object.FindObjectsOfType<TombStone>()) {
             var nv = t.GetComponent<ZNetView>();
-            if (nv == null || !nv.IsValid() || nv.GetZDO().GetBool(DownedState.s_isDownedMarker)) continue;
+            if (nv == null || !nv.IsValid() || nv.GetZDO().GetBool(DownedKeys.IsDownedMarker)) continue;
             realTombstone = true;
             inPlace = markerPos != Vector3.zero && Vector3.Distance(t.transform.position, markerPos) < 2f;
             var rb = t.GetComponent<Rigidbody>();
@@ -892,7 +892,7 @@ public class E2ERunner : MonoBehaviour {
     // =====================================================================
     /// <summary>Marker interactable for a downed player (single-process tests/demo).</summary>
     private static ReviveInteractable? FindMarkerInteractable(Player downed) {
-        var marker = DownedState.FindLinkedMarker(downed);
+        var marker = downed.FindDownedMarker();
         return marker != null ? marker.GetComponentInChildren<ReviveInteractable>() : null;
     }
 
@@ -903,7 +903,7 @@ public class E2ERunner : MonoBehaviour {
     /// blocking -- like a still-active corpse collider -- makes this return null).
     /// </summary>
     private static ReviveInteractable? FindInteractableViaHoverRay(Player downed, Player me) {
-        var marker = DownedState.FindLinkedMarker(downed);
+        var marker = downed.FindDownedMarker();
         if (marker == null) return null;
         var target = marker.transform.position + Vector3.up * 0.3f;
         var origin = target + new Vector3(1.8f, 1.2f, 0f);
@@ -916,7 +916,7 @@ public class E2ERunner : MonoBehaviour {
     private static Player? FindDownedRemotePlayer(Player me) {
         foreach (var p in Player.GetAllPlayers()) {
             if (p == null || p == me) continue;
-            if (DownedState.IsDowned(p)) return p;
+            if (p.IsDowned()) return p;
         }
         return null;
     }

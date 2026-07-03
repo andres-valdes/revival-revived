@@ -27,6 +27,31 @@ public class Plugin : BaseUnityPlugin {
     internal static ConfigEntry<float> ReviveHoldTimeCfg = null!;
     internal static ConfigEntry<float> ReviveWindowCfg = null!;
 
+    /// <summary>Revive window duration in seconds (RR_E2E_WINDOW overrides for tests).</summary>
+    public static float ReviveWindow {
+        get {
+            if (s_windowEnvOverride > 0f) return s_windowEnvOverride;
+            return ReviveWindowCfg?.Value ?? 30f;
+        }
+    }
+
+    private static readonly float s_windowEnvOverride = ReadWindowOverride();
+
+    private static float ReadWindowOverride() {
+        var s = System.Environment.GetEnvironmentVariable("RR_E2E_WINDOW");
+        return float.TryParse(s, out var v) && v > 0f ? v : 0f;
+    }
+
+    /// <summary>How long the channeled revive hold takes (Hold mode).</summary>
+    public static float ReviveDuration => UnityEngine.Mathf.Max(0.1f, ReviveHoldTimeCfg?.Value ?? 4f);
+
+    /// <summary>True when a single press (no hold) completes the revive.</summary>
+    public static bool RevivePressMode =>
+        ReviveModeCfg != null && ReviveModeCfg.Value == ReviveModeType.Press;
+
+    /// <summary>Health fraction restored on revive (0-1).</summary>
+    public const float ReviveHealthFraction = 0.25f;
+
     private Harmony? _harmony;
 
     private void Awake() {

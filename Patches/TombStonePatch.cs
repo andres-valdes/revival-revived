@@ -16,7 +16,7 @@ static class TombStoneStartMarkerPatch {
     static void Postfix(TombStone __instance) {
         var nview = __instance.GetComponent<ZNetView>();
         if (nview == null || !nview.IsValid()) return;
-        if (!nview.GetZDO().GetBool(DownedState.s_isDownedMarker)) return;
+        if (!nview.GetZDO().GetBool(DownedKeys.IsDownedMarker)) return;
         DownedMarker.Convert(__instance);
     }
 }
@@ -30,9 +30,9 @@ static class TombStoneStartMarkerPatch {
 [HarmonyPatch(typeof(TombStone), "Setup")]
 static class TombStoneSetupReplacePatch {
     static void Postfix(TombStone __instance) {
-        var at = DownedState.ReplaceGraveAt;
+        var at = DownedMarker.ReplaceGraveAt;
         if (at == null) return;
-        DownedState.ReplaceGraveAt = null;
+        DownedMarker.ReplaceGraveAt = null;
 
         __instance.transform.position = at.Value;
         var body = __instance.GetComponent<Rigidbody>();

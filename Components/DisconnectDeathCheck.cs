@@ -33,12 +33,12 @@ public class DisconnectDeathCheck : MonoBehaviour {
         while (t < 12f) {
             if (m_player == null || !m_player.m_nview.IsValid()) { Destroy(this); yield break; }
             // If we legitimately went down again after spawning, stop.
-            if (DownedState.IsDowned(m_player)) { Destroy(this); yield break; }
+            if (m_player.IsDowned()) { Destroy(this); yield break; }
 
-            var orphan = DownedState.FindMarkerForPlayer(pid);
+            var orphan = DownedMarker.FindFor(pid);
             if (orphan != null) {
                 Plugin.Logger.LogInfo($"{m_player.GetPlayerName()} reconnected with an orphaned downed marker -> dying");
-                DownedState.KillDowned(m_player);
+                KillDowned(m_player);
                 Destroy(this);
                 yield break;
             }
@@ -49,4 +49,43 @@ public class DisconnectDeathCheck : MonoBehaviour {
         Destroy(this);
     }
 
+    /// <summary>
+    /// Complete the death of a player who disconnected while downed: remove the
+    /// orphaned marker and run vanilla death so the real (looted) grave spawns
+    /// in its place. Owner only.
+    /// </summary>
+    private static void KillDowned(Player player) {
+        if (player == null || !player.m_nview.IsValid() || !player.m_nview.IsOwner()) return;
+
+        var zdo = player.m_nview.GetZDO();
+        zdo.Set(DownedKeys.Downed, false);
+
+        // Remove any linked or orphaned marker; the real grave replaces it
+        // in place (no second drop-in pop). On reconnect the marker is owned by
+        // the server, so DestroyMarker claims it first.
+        var linked = player.FindDownedMarker();
+        if (linked != null) DownedMarker.ReplaceGraveAt = linked.transform.position;
+        DownedMarker.DestroyLinkedMarker(zdo);
+        var orphan = DownedMarker.FindFor(player.GetPlayerID());
+        if (orphan != null) DownedMarker.ReplaceGraveAt = orphan.transform.position;
+        DownedMarker.DestroyMarker(orphan);
+
+        var rev = player.GetComponent<Revivable>();
+        if (rev != null) Destroy(rev);
+
+        // Restore control so vanilla death runs cleanly.
+        if (player.m_collider != null) player.m_collider.enabled = true;
+        if (player.m_body != null) player.m_body.isKinematic = false;
+        if (player.m_visual != null) player.m_visual.SetActive(true);
+
+        // Guard: OnDeath dereferences m_lastHit before spawning the grave.
+        if (player.m_lastHit == null) {
+            player.m_lastHit = new HitData { m_hitType = HitData.HitType.Self };
+        }
+        player.SetHealth(0f);
+
+        // Invoke vanilla death directly (spawns the real tombstone, sets s_dead).
+        HarmonyLib.Traverse.Create(player).Method("OnDeath").GetValue();
+        Plugin.Logger.LogInfo($"{player.GetPlayerName()} died from being downed at disconnect");
+    }
 }

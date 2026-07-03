@@ -13,25 +13,25 @@ static class PlayerAwakePatch {
         var nview = __instance.m_nview;
 
         // Transient poof effect on down; all state is ZDO-driven via Revivable.
-        nview.Register(DownedState.RPC_OnDowned, (long sender) => {
-            DownedState.PlayDownedPoof(__instance);
+        nview.Register(DownedKeys.RpcOnDowned, (long sender) => {
+            __instance.PlayDownedPoof();
         });
 
         // Reviver -> owner: "still channeling" ping (pauses the bleed-out window).
-        nview.Register(DownedState.RPC_Channel, (long sender) => {
+        nview.Register(DownedKeys.RpcChannel, (long sender) => {
             if (!nview.IsOwner()) return;
             __instance.GetComponent<Revivable>()?.ChannelPing();
         });
 
         // Reviver -> owner: peer-authoritative hold completed, execute the revive.
-        nview.Register(DownedState.RPC_DoRevive, (long sender) => {
-            if (!nview.IsOwner() || !DownedState.IsDowned(__instance)) return;
-            DownedState.Revive(__instance, sender);
+        nview.Register(DownedKeys.RpcDoRevive, (long sender) => {
+            if (!nview.IsOwner() || !__instance.IsDowned()) return;
+            __instance.ReviveFromDowned(sender);
         });
 
         // Late join / streamed-in-while-downed: the component reflects the
         // replicated state; everything else happens in its Update.
-        if (DownedState.IsDowned(__instance) && __instance.GetComponent<Revivable>() == null) {
+        if (__instance.IsDowned() && __instance.GetComponent<Revivable>() == null) {
             __instance.gameObject.AddComponent<Revivable>();
         }
     }
@@ -44,7 +44,7 @@ static class PlayerAwakePatch {
 [HarmonyPatch(typeof(Player), "CanMove")]
 static class PlayerCanMovePatch {
     static void Postfix(Player __instance, ref bool __result) {
-        if (__result && DownedState.IsDowned(__instance)) {
+        if (__result && __instance.IsDowned()) {
             __result = false;
         }
     }
@@ -58,7 +58,7 @@ static class PlayerCanMovePatch {
 [HarmonyPatch(typeof(Character), "UpdateMotion")]
 static class CharacterUpdateMotionPatch {
     static bool Prefix(Character __instance) {
-        if (__instance is Player player && DownedState.IsDowned(player)) {
+        if (__instance is Player player && player.IsDowned()) {
             return false; // skip all motion
         }
         return true;
@@ -73,7 +73,7 @@ static class CharacterUpdateMotionPatch {
 [HarmonyPatch(typeof(Player), "LateUpdate")]
 static class PlayerLateUpdatePatch {
     static void Postfix(Player __instance) {
-        if (DownedState.IsDowned(__instance) && __instance.GetComponent<Revivable>() == null) {
+        if (__instance.IsDowned() && __instance.GetComponent<Revivable>() == null) {
             __instance.gameObject.AddComponent<Revivable>();
         }
     }
@@ -86,7 +86,7 @@ static class PlayerLateUpdatePatch {
 [HarmonyPatch(typeof(Player), "UpdateHover")]
 static class PlayerUpdateHoverPatch {
     static bool Prefix(Player __instance) {
-        if (DownedState.IsDowned(__instance)) {
+        if (__instance.IsDowned()) {
             return false;
         }
         return true;
@@ -100,7 +100,7 @@ static class PlayerUpdateHoverPatch {
 [HarmonyPatch(typeof(Player), "OnRespawn")]
 static class PlayerOnRespawnPatch {
     static bool Prefix(Player __instance) {
-        if (DownedState.IsDowned(__instance)) {
+        if (__instance.IsDowned()) {
             return false;
         }
         return true;
@@ -115,7 +115,7 @@ static class PlayerOnRespawnPatch {
 [HarmonyPatch(typeof(EnemyHud), "TestShow")]
 static class EnemyHudHideDownedPatch {
     static void Postfix(Character c, ref bool __result) {
-        if (__result && c is Player p && DownedState.IsDowned(p)) {
+        if (__result && c is Player p && p.IsDowned()) {
             __result = false;
         }
     }

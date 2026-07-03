@@ -8,7 +8,7 @@ namespace RevivalRevived.Components;
 ///
 /// ZDO-driven like the rest of the mod: every frame it scans the loaded players
 /// for one that is downed with a non-zero replicated
-/// <see cref="DownedState.s_reviveProgress"/> and shows that progress. Because
+/// <see cref="DownedKeys.ReviveProgress"/> and shows that progress. Because
 /// the progress field replicates, the circle appears for the reviver, the
 /// downed player, and any bystander -- no RPC plumbing.
 /// </summary>
@@ -85,8 +85,8 @@ public class ReviveProgressUI : MonoBehaviour {
         float progress = 0f;
         // Any downed player with channel progress (replicated ZDO) drives the UI.
         foreach (var p in Player.GetAllPlayers()) {
-            if (p == null || !DownedState.IsDowned(p)) continue;
-            progress = Mathf.Max(progress, DownedState.GetReviveProgress(p));
+            if (p == null || !p.IsDowned()) continue;
+            progress = Mathf.Max(progress, p.GetReviveProgress());
         }
 
         bool show = progress > 0.01f;

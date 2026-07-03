@@ -32,9 +32,9 @@ static class CheckDeathPatch {
 
         // --- Health is <= 0 and player is not dead ---
 
-        if (DownedState.IsDowned(player)) {
+        if (player.IsDowned()) {
             // Already downed -- check if window expired
-            if (DownedState.IsReviveWindowExpired(player)) {
+            if (player.IsReviveWindowExpired()) {
                 // Window expired: clear downed state, let OnDeath fire.
                 // Defensive: Player.OnDeath dereferences m_lastHit (switch on
                 // m_lastHit.m_hitType) before spawning the tombstone, so a death
@@ -43,7 +43,7 @@ static class CheckDeathPatch {
                 if (player.m_lastHit == null) {
                     player.m_lastHit = new HitData { m_hitType = HitData.HitType.Self };
                 }
-                DownedState.ExpireDownedState(player);
+                player.ExpireDownedState();
                 return true; // proceed to OnDeath
             }
 
@@ -52,7 +52,7 @@ static class CheckDeathPatch {
         }
 
         // Not downed yet -- enter downed state instead of dying
-        DownedState.EnterDownedState(player);
+        player.EnterDownedState();
         return false; // suppress OnDeath
     }
 }

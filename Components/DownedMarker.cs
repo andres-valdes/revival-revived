@@ -15,7 +15,7 @@ namespace RevivalRevived.Components;
 /// marker visually "becomes" a grave right as it converts to the real one.
 ///
 /// Conversion is idempotent and ZDO-driven: it runs on every client whose
-/// tombstone ZDO has <see cref="DownedState.s_isDownedMarker"/> set (owner spawns
+/// tombstone ZDO has <see cref="DownedKeys.IsDownedMarker"/> set (owner spawns
 /// it directly; remotes convert from a <c>TombStone.Start</c> postfix).
 /// </summary>
 public class DownedMarker : MonoBehaviour {
@@ -46,6 +46,105 @@ public class DownedMarker : MonoBehaviour {
 
     /// <summary>0 = fully green (window fresh), 1 = original grave red (window elapsed). Test hook.</summary>
     public float CurrentBlend { get; private set; }
+
+    // =====================================================================
+    //  Marker lifecycle (spawn / find / destroy)
+    // =====================================================================
+
+    /// <summary>Upward launch velocity applied to the last spawned marker (test hook).</summary>
+    public static float LastPopVelY { get; private set; }
+
+    /// <summary>
+    /// When set, the next real (loot) tombstone spawned by vanilla death
+    /// replaces the removed marker seamlessly: same position, no drop-in pop
+    /// (it already played when the marker spawned). Consumed by the
+    /// TombStone.Setup patch.
+    /// </summary>
+    public static Vector3? ReplaceGraveAt;
+
+    /// <summary>
+    /// Spawn the green marker tombstone for a freshly-downed player (owner only)
+    /// and cross-link it to the player via ZDO.
+    /// </summary>
+    public static void Spawn(Player player) {
+        var prefab = player.m_tombstone;
+        if (prefab == null) {
+            Plugin.Logger.LogError("DownedMarker.Spawn: player has no tombstone prefab");
+            return;
+        }
+
+        var go = Object.Instantiate(prefab, player.GetCenterPoint(), player.transform.rotation);
+        var nview = go.GetComponent<ZNetView>();
+        if (nview == null || !nview.IsValid()) {
+            Plugin.Logger.LogError("DownedMarker.Spawn: tombstone has no valid ZNetView");
+            return;
+        }
+
+        var markerZdo = nview.GetZDO();
+        var playerZdo = player.m_nview.GetZDO();
+
+        // Flag it as a downed marker so every client converts it (green, no loot).
+        markerZdo.Set(DownedKeys.IsDownedMarker, true);
+        markerZdo.Set(DownedKeys.PlayerZdoId, playerZdo.m_uid);
+        markerZdo.Set(DownedKeys.OwnerPlayerID, player.GetPlayerID()); // stable across rejoin
+        markerZdo.Set(ZDOVars.s_ownerName, player.GetPlayerName());   // world text
+        markerZdo.Set(DownedKeys.DownedTime, (float)ZNet.instance.GetTimeSeconds()); // fallback clock
+
+        playerZdo.Set(DownedKeys.MarkerZdoId, markerZdo.m_uid);
+
+        // Vanilla tombstone "drop-in" pop (Setup normally does this; the marker
+        // is not a loot grave so Setup is never called).
+        var body = go.GetComponent<Rigidbody>();
+        if (body != null) body.linearVelocity = new Vector3(0f, 5f, 0f);
+        LastPopVelY = body != null ? body.linearVelocity.y : 0f;
+
+        // Convert immediately on the owner (TombStone.Start postfix converts on
+        // every other client; Convert is idempotent).
+        var tomb = go.GetComponent<TombStone>();
+        if (tomb != null) Convert(tomb);
+
+        Plugin.Logger.LogInfo($"Spawned downed marker (tombstone) for {player.GetPlayerName()}, ZDOID {markerZdo.m_uid}");
+    }
+
+    /// <summary>
+    /// Find the marker belonging to a stable PlayerID (used to detect the orphan
+    /// left behind when a downed player disconnects).
+    /// </summary>
+    public static GameObject? FindFor(long playerId) {
+        if (playerId == 0L) return null;
+        foreach (var dm in Object.FindObjectsOfType<DownedMarker>()) {
+            var nv = dm.GetComponent<ZNetView>();
+            if (nv == null || !nv.IsValid()) continue;
+            if (nv.GetZDO().GetLong(DownedKeys.OwnerPlayerID, 0L) == playerId) return dm.gameObject;
+        }
+        return null;
+    }
+
+    /// <summary>Destroy the marker linked from a player ZDO and clear the link.</summary>
+    public static void DestroyLinkedMarker(ZDO playerZdo) {
+        var markerId = playerZdo.GetZDOID(DownedKeys.MarkerZdoId);
+        if (markerId == ZDOID.None) return;
+
+        playerZdo.Set(DownedKeys.MarkerZdoId, ZDOID.None);
+        DestroyMarker(ZNetScene.instance.FindInstance(markerId));
+    }
+
+    /// <summary>
+    /// Destroy a marker tombstone, claiming ownership first: after a disconnect
+    /// (or a reviver's progress claim) the marker may be owned elsewhere, and a
+    /// non-owner Destroy silently fails to replicate.
+    /// </summary>
+    public static void DestroyMarker(GameObject? go) {
+        if (go == null) return;
+        var nview = go.GetComponent<ZNetView>();
+        if (nview == null || !nview.IsValid()) return;
+        if (!nview.IsOwner()) nview.ClaimOwnership();
+        nview.Destroy();
+    }
+
+    // =====================================================================
+    //  Conversion (tombstone -> green revive marker)
+    // =====================================================================
 
     public static void Convert(TombStone tomb) {
         if (tomb == null) return;
@@ -165,13 +264,13 @@ public class DownedMarker : MonoBehaviour {
         // single writer -- the channeling reviver publishing progress -- so the
         // window clock cannot live here without ZDO revision fights.
         var zdo = m_nview.GetZDO();
-        var playerZdoId = zdo.GetZDOID(DownedState.s_playerZDOID);
+        var playerZdoId = zdo.GetZDOID(DownedKeys.PlayerZdoId);
         var playerZdo = playerZdoId != ZDOID.None ? ZDOMan.instance.GetZDO(playerZdoId) : null;
         var downedTime = playerZdo != null
-            ? playerZdo.GetFloat(DownedState.s_downedTime)
-            : zdo.GetFloat(DownedState.s_downedTime); // fallback: spawn-time value
+            ? playerZdo.GetFloat(DownedKeys.DownedTime)
+            : zdo.GetFloat(DownedKeys.DownedTime); // fallback: spawn-time value
         var elapsed = (float)ZNet.instance.GetTimeSeconds() - downedTime;
-        ApplyBlend(Mathf.Clamp01(elapsed / DownedState.ReviveWindow));
+        ApplyBlend(Mathf.Clamp01(elapsed / Plugin.ReviveWindow));
     }
 
     /// <summary>True if the marker recoloured at least one accent source (test hook).</summary>

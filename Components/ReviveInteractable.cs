@@ -9,7 +9,7 @@ namespace RevivalRevived.Components;
 /// lag-free -- Valheim's trust model doesn't need host arbitration), publishes
 /// progress onto the marker ZDO (claiming ownership) so the downed player and
 /// bystanders see it too, pings the owner to pause the bleed-out window, and
-/// sends <see cref="DownedState.RPC_DoRevive"/> when the hold completes.
+/// sends <see cref="DownedKeys.RpcDoRevive"/> when the hold completes.
 /// </summary>
 public class ReviveInteractable : MonoBehaviour, Hoverable, Interactable {
     private ZNetView? m_nview;
@@ -30,9 +30,13 @@ public class ReviveInteractable : MonoBehaviour, Hoverable, Interactable {
     /// <summary>The downed player linked to this marker, or null.</summary>
     private Player? FindDownedPlayer() {
         if (m_nview == null || !m_nview.IsValid()) return null;
-        var player = DownedState.FindLinkedPlayer(m_nview.GetZDO());
-        if (player == null || !DownedState.IsDowned(player)) return null;
-        return player;
+        var playerZdoId = m_nview.GetZDO().GetZDOID(DownedKeys.PlayerZdoId);
+        if (playerZdoId == ZDOID.None) return null;
+        var playerZdo = ZDOMan.instance.GetZDO(playerZdoId);
+        if (playerZdo == null) return null;
+        var nview = ZNetScene.instance.FindInstance(playerZdo);
+        var player = nview != null ? nview.GetComponent<Player>() : null;
+        return player != null && player.IsDowned() ? player : null;
     }
 
     private void Update() {
@@ -42,7 +46,7 @@ public class ReviveInteractable : MonoBehaviour, Hoverable, Interactable {
         var player = channeling || m_holdTimer > 0f ? FindDownedPlayer() : null;
 
         if (channeling && player != null) {
-            if (DownedState.PressMode) {
+            if (Plugin.RevivePressMode) {
                 SendRevive(player);
                 return;
             }
@@ -52,10 +56,10 @@ public class ReviveInteractable : MonoBehaviour, Hoverable, Interactable {
             // Keep the owner's bleed-out window paused while we channel.
             if (Time.time - m_lastPingTime > PingInterval) {
                 m_lastPingTime = Time.time;
-                player.m_nview.InvokeRPC(DownedState.RPC_Channel);
+                player.m_nview.InvokeRPC(DownedKeys.RpcChannel);
             }
 
-            if (m_holdTimer >= DownedState.ReviveDuration) {
+            if (m_holdTimer >= Plugin.ReviveDuration) {
                 SendRevive(player);
                 return;
             }
@@ -65,7 +69,7 @@ public class ReviveInteractable : MonoBehaviour, Hoverable, Interactable {
             return; // idle: nothing to publish
         }
 
-        PublishProgress(Mathf.Clamp01(m_holdTimer / DownedState.ReviveDuration));
+        PublishProgress(Mathf.Clamp01(m_holdTimer / Plugin.ReviveDuration));
     }
 
     /// <summary>
@@ -75,7 +79,7 @@ public class ReviveInteractable : MonoBehaviour, Hoverable, Interactable {
     private void PublishProgress(float progress) {
         if (m_nview == null || !m_nview.IsValid()) return;
         if (!m_nview.IsOwner()) m_nview.ClaimOwnership();
-        m_nview.GetZDO().Set(DownedState.s_reviveProgress, progress);
+        m_nview.GetZDO().Set(DownedKeys.ReviveProgress, progress);
     }
 
     private void SendRevive(Player player) {
@@ -84,7 +88,7 @@ public class ReviveInteractable : MonoBehaviour, Hoverable, Interactable {
         m_holdTimer = 0f;
         PublishProgress(0f);
         // Routed to the downed player's owner, which executes the revive.
-        player.m_nview.InvokeRPC(DownedState.RPC_DoRevive);
+        player.m_nview.InvokeRPC(DownedKeys.RpcDoRevive);
     }
 
     public string GetHoverText() {
@@ -92,9 +96,9 @@ public class ReviveInteractable : MonoBehaviour, Hoverable, Interactable {
         if (player == null) return "";
 
         var name = m_nview!.GetZDO().GetString(ZDOVars.s_ownerName, "Viking");
-        var verb = DownedState.PressMode ? "" : "Hold ";
+        var verb = Plugin.RevivePressMode ? "" : "Hold ";
         var text = $"{name} (downed)\n";
-        text += $"[<color=yellow><b>{verb}$KEY_Use</b></color>] Revive ({DownedState.GetRemainingTime(player):F0}s)";
+        text += $"[<color=yellow><b>{verb}$KEY_Use</b></color>] Revive ({player.GetDownedRemainingTime():F0}s)";
         return Localization.instance.Localize(text);
     }
 
@@ -105,7 +109,7 @@ public class ReviveInteractable : MonoBehaviour, Hoverable, Interactable {
     }
 
     public bool Interact(Humanoid user, bool hold, bool alt) {
-        if (!hold && !DownedState.PressMode) return false;
+        if (!hold && !Plugin.RevivePressMode) return false;
         if (user is not Player reviver) return false;
 
         var player = FindDownedPlayer();
