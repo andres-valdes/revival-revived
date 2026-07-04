@@ -1,6 +1,6 @@
 {
   "name": "RevivalRevived",
-  "version_number": "0.1.1",
+  "version_number": "0.2.0",
   "website_url": "https://github.com/andres-valdes/revival-revived",
   "description": "Downed instead of dead: lethal damage leaves a revive marker teammates can revive you at before the window runs out and death becomes permanent. Configurable hold time, window and press-mode.",
   "dependencies": [

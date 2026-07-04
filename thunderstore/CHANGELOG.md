@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.2.0
+
+Reliability pass on the revive flow, especially in multiplayer with real
+network latency.
+
+- Reviving is now owner-authoritative: the progress circle no longer overflows
+  past full and refills near completion, and a completed revive never leaves a
+  lingering marker behind on high-latency servers.
+- The revive marker crumbles away (grave despawn effect) when you are revived,
+  instead of blinking out.
+- Dead bodies stay inert until respawn: no invisible collider to bump into and
+  no floating name/health bar over the corpse.
+- Hardened the marker-to-tombstone handoff so the swap is gap-free, and a death
+  with an empty inventory crumbles the marker instead of leaving it to vanish.
+
 ## 0.1.1
 
 - Rewrote the mod page with full usage details.
