@@ -61,12 +61,13 @@ public class DisconnectDeathCheck : MonoBehaviour {
         var zdo = player.m_nview.GetZdo<DownedPlayerZdo>();
         zdo.Downed = false;
 
-        // Remove any linked or orphaned marker; the real grave replaces it
-        // in place (no second drop-in pop) via the replace fields on our own
-        // player ZDO. On reconnect the marker is owned by the server, so
-        // DestroyMarker claims it first.
-        var linked = player.FindDownedMarker();
+        // The marker is NOT destroyed here: it outlives the death so the swap to
+        // the real grave (or the crumble, when no grave spawns) is gap-free. The
+        // replace request on our own player ZDO is consumed by the grave-spawn
+        // patch (grave spawned: reposition + mark the marker replaced) or the
+        // OnDeath postfix (no grave: crumble the marker).
         var orphan = DownedMarker.FindFor(player.GetPlayerID());
+        var linked = player.FindDownedMarker();
         var replaceAt = orphan != null ? orphan.transform.position
                       : linked != null ? linked.transform.position
                       : (Vector3?)null;
@@ -74,16 +75,9 @@ public class DisconnectDeathCheck : MonoBehaviour {
             zdo.GraveReplacePending = true;
             zdo.GraveReplacePos = replaceAt.Value;
         }
-        DownedMarker.DestroyLinkedMarker(ref zdo);
-        DownedMarker.DestroyMarker(orphan);
 
         var rev = player.GetComponent<Revivable>();
         if (rev != null) Destroy(rev);
-
-        // Restore control so vanilla death runs cleanly.
-        if (player.m_collider != null) player.m_collider.enabled = true;
-        if (player.m_body != null) player.m_body.isKinematic = false;
-        if (player.m_visual != null) player.m_visual.SetActive(true);
 
         // Guard: OnDeath dereferences m_lastHit before spawning the grave.
         if (player.m_lastHit == null) {

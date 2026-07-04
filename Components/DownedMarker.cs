@@ -44,6 +44,15 @@ public partial class DownedMarker : MonoBehaviour {
 
         /// <summary>Vanilla world-text key, shared with real graves.</summary>
         [ZdoTyped.ZdoField(Name = "ownerName", NoPrefix = true)] public partial string OwnerName { get; set; }
+
+        /// <summary>
+        /// The real loot grave has spawned in this marker's place. Each client
+        /// hides the marker locally once it can SEE that grave (destroy/create
+        /// packets are not ordered across the network, so destroying the ZDO
+        /// immediately leaves a visible one-frame-or-worse gap on remotes); the
+        /// ZDO itself is destroyed after a grace period.
+        /// </summary>
+        [ZdoTyped.ZdoField(Name = "replacedByGrave")] public partial bool ReplacedByGrave { get; set; }
     }
 
     /// <summary>Revive-window accent colour at full time remaining.</summary>
@@ -129,9 +138,63 @@ public partial class DownedMarker : MonoBehaviour {
         foreach (var dm in Object.FindObjectsOfType<DownedMarker>()) {
             var nv = dm.GetComponent<ZNetView>();
             if (nv == null || !nv.IsValid()) continue;
-            if (nv.GetZdo<View>().OwnerPlayerId == playerId) return dm.gameObject;
+            var view = nv.GetZdo<View>();
+            // A replaced marker is a lame-duck prop awaiting destruction, not
+            // evidence of a downed player (it must not re-trigger the
+            // reconnect-death check while it lingers).
+            if (view.ReplacedByGrave) continue;
+            if (view.OwnerPlayerId == playerId) return dm.gameObject;
         }
         return null;
+    }
+
+    /// <summary>
+    /// The real grave has spawned in this marker's place: flag the marker ZDO so
+    /// every client swaps its presentation locally, gap-free (see
+    /// <see cref="View.ReplacedByGrave"/>). The instance handles hide + delayed
+    /// destroy in its Update.
+    /// </summary>
+    public static void MarkReplaced(GameObject? marker) {
+        if (marker == null) return;
+        var nview = marker.GetComponent<ZNetView>();
+        if (nview == null || !nview.IsValid()) return;
+        if (!nview.IsOwner()) nview.ClaimOwnership();
+        var view = nview.GetZdo<View>();
+        view.ReplacedByGrave = true;
+    }
+
+    /// <summary>Effect objects created by the last marker crumble (test hook).</summary>
+    public static int LastCrumbleEffectCount { get; private set; }
+
+    /// <summary>
+    /// No grave replaces this marker (the player died with an empty inventory,
+    /// so vanilla spawns no tombstone): despawn it the way an emptied grave
+    /// does -- play the tombstone's own crumble effect (a networked vfx, so it
+    /// covers the disappearance on every client) and destroy it.
+    /// </summary>
+    public static void Crumble(GameObject? marker) {
+        if (marker == null) return;
+        var effect = FindGraveCrumbleEffect();
+        if (effect != null) {
+            var created = effect.Create(marker.transform.position, marker.transform.rotation);
+            LastCrumbleEffectCount = created?.Length ?? 0;
+        }
+        DestroyMarker(marker);
+    }
+
+    private static EffectList? s_crumbleEffect;
+
+    /// <summary>The vanilla tombstone's remove-effect (what plays when an emptied grave despawns).</summary>
+    private static EffectList? FindGraveCrumbleEffect() {
+        if (s_crumbleEffect != null) return s_crumbleEffect;
+        var prefab = ZNetScene.instance != null ? FindTombstonePrefab(ZNetScene.instance) : null;
+        var tomb = prefab != null ? prefab.GetComponent<TombStone>() : null;
+        if (tomb != null && tomb.m_removeEffect != null && tomb.m_removeEffect.m_effectPrefabs.Length > 0) {
+            s_crumbleEffect = tomb.m_removeEffect;
+        } else {
+            Plugin.Logger.LogWarning("DownedMarker: no grave crumble effect found");
+        }
+        return s_crumbleEffect;
     }
 
     /// <summary>Destroy the marker linked from a player's typed view and clear the link.</summary>
@@ -321,15 +384,71 @@ public partial class DownedMarker : MonoBehaviour {
         }
     }
 
+    // ---- Replaced-by-grave handoff (local presentation, then destroy) ------
+
+    /// <summary>Local time we first observed the replaced flag; -1 = not replaced.</summary>
+    private float m_replacedSince = -1f;
+    private bool m_hiddenForReplace;
+
+    /// <summary>Local renderers/colliders/lights are disabled, awaiting ZDO destroy (test hook).</summary>
+    public bool HiddenForReplace => m_hiddenForReplace;
+
+    /// <summary>Hide as soon as the grave is seen, or unconditionally after this long.</summary>
+    private const float ReplaceHideTimeout = 4f;
+    /// <summary>The client that flagged the replace destroys the ZDO after this long.</summary>
+    private const float ReplaceDestroyDelay = 5f;
+    /// <summary>Any client cleans up a lingering replaced marker after this long (flagger vanished).</summary>
+    private const float ReplaceDestroyFailsafe = 10f;
+
+    private void UpdateReplaced() {
+        if (m_replacedSince < 0f) m_replacedSince = Time.time;
+        float elapsed = Time.time - m_replacedSince;
+
+        // Swap locally only once THIS client can see the real grave standing in
+        // for us -- that is what makes the handoff gap-free everywhere.
+        if (!m_hiddenForReplace && (elapsed > ReplaceHideTimeout || GraveNearby())) {
+            HideLocally();
+        }
+
+        if (m_nview!.IsOwner()) {
+            if (elapsed > ReplaceDestroyDelay) m_nview.Destroy();
+        } else if (elapsed > ReplaceDestroyFailsafe) {
+            m_nview.ClaimOwnership();
+            m_nview.Destroy();
+        }
+    }
+
+    private bool GraveNearby() {
+        foreach (var tomb in Object.FindObjectsOfType<TombStone>()) {
+            if ((tomb.transform.position - transform.position).sqrMagnitude < 9f) return true;
+        }
+        return false;
+    }
+
+    private void HideLocally() {
+        m_hiddenForReplace = true;
+        foreach (var r in GetComponentsInChildren<Renderer>()) r.enabled = false;
+        foreach (var c in GetComponentsInChildren<Collider>()) c.enabled = false;
+        foreach (var l in GetComponentsInChildren<Light>()) l.enabled = false;
+    }
+
     private void Update() {
         if (m_nview == null || !m_nview.IsValid()) return;
+        var view = m_nview.GetZdo<View>();
+
+        // The real grave took our place: hide once it is visible here, destroy
+        // the ZDO after a grace period. No gradient/interaction from here on.
+        if (view.ReplacedByGrave) {
+            UpdateReplaced();
+            return;
+        }
+
         // Blend from green back to the grave's own red as the window elapses.
         //
         // The clock is read from the LINKED PLAYER's ZDO (its owner maintains it,
         // including the pause-while-channeling shift). The marker ZDO must have a
         // single writer -- the channeling reviver publishing progress -- so the
         // window clock cannot live here without ZDO revision fights.
-        var view = m_nview.GetZdo<View>();
         var playerZdoId = view.Player;
         var playerZdo = playerZdoId != ZDOID.None ? ZDOMan.instance.GetZDO(playerZdoId) : null;
         var downedTime = playerZdo != null

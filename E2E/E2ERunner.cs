@@ -582,6 +582,8 @@ public class E2ERunner : MonoBehaviour {
         yield return StartCoroutine(Test_DisconnectDeath());
         yield return StartCoroutine(WaitForAlivePlayer());
         yield return StartCoroutine(Test_ExpiryKills());
+        yield return StartCoroutine(WaitForAlivePlayer());
+        yield return StartCoroutine(Test_EmptyInventoryCrumbles());
     }
 
     /// <summary>
@@ -903,26 +905,110 @@ public class E2ERunner : MonoBehaviour {
 
         bool dead = player.IsDead();
         bool notDowned = !player.IsDowned();
+        // The corpse lingers invisibly until respawn (no ragdoll); it must be
+        // inert -- nothing to bump into.
+        bool corpseInert = dead && player.m_collider != null && !player.m_collider.enabled;
+
+        // Gap-free handoff: the marker is NOT destroyed at death -- it hides
+        // once the real grave is visible here and its ZDO is destroyed after a
+        // grace period. On no frame may the spot be empty: the marker must stay
+        // visible until a grave stands within its handoff radius.
+        bool gapless = true;
         bool markerGone = markerBefore == null || !markerBefore;
+        float hw = 0f;
+        while (hw < 9f && !markerGone) {
+            bool visible = false;
+            foreach (var r in markerBefore!.GetComponentsInChildren<Renderer>()) {
+                if (r.enabled) { visible = true; break; }
+            }
+            if (!visible && FindRealGraveNear(markerPos, 3f) == null) gapless = false;
+            hw += Time.unscaledDeltaTime;
+            yield return null;
+            markerGone = markerBefore == null || !markerBefore;
+        }
+
         // A real, non-marker tombstone should now exist -- standing exactly where
         // the marker stood, with no second drop-in pop (velocity ~ zero).
         bool realTombstone = false, inPlace = false, noPop = false, embersOnGrave = false;
-        foreach (var t in UnityEngine.Object.FindObjectsOfType<TombStone>()) {
-            var nv = t.GetComponent<ZNetView>();
-            if (!nv.TryGetZdo<DownedMarker.View>(out var graveView) || graveView.IsDownedMarker) continue;
+        var grave = FindRealGraveNear(markerPos, 999f);
+        if (grave != null) {
             realTombstone = true;
-            inPlace = markerPos != Vector3.zero && Vector3.Distance(t.transform.position, markerPos) < 2f;
-            var rb = t.GetComponent<Rigidbody>();
+            inPlace = markerPos != Vector3.zero && Vector3.Distance(grave.transform.position, markerPos) < 2f;
+            var rb = grave.GetComponent<Rigidbody>();
             noPop = rb == null || rb.linearVelocity.y < 1f;
             // The real grave keeps its embers/glow -- the "truly dead" signal.
-            embersOnGrave = t.GetComponentsInChildren<ParticleSystem>(false).Length > 0;
-            break;
+            embersOnGrave = grave.GetComponentsInChildren<ParticleSystem>(false).Length > 0;
         }
         bool noRagdolls = UnityEngine.Object.FindObjectsOfType<Ragdoll>().Length == 0;
 
-        Record(T, dead && notDowned && markerGone && realTombstone && inPlace && noPop && embersOnGrave && noRagdolls,
-            $"dead={dead} notDowned={notDowned} markerGone={markerGone} realTombstone={realTombstone} " +
-            $"inPlace={inPlace} noPop={noPop} embersOnGrave={embersOnGrave} noRagdolls={noRagdolls}");
+        Record(T, dead && notDowned && corpseInert && markerGone && gapless && realTombstone && inPlace && noPop && embersOnGrave && noRagdolls,
+            $"dead={dead} notDowned={notDowned} corpseInert={corpseInert} markerGone={markerGone} gapless={gapless} " +
+            $"realTombstone={realTombstone} inPlace={inPlace} noPop={noPop} embersOnGrave={embersOnGrave} noRagdolls={noRagdolls}");
+    }
+
+    /// <summary>Nearest real (non-marker) tombstone within maxDist of pos, or null.</summary>
+    private static TombStone? FindRealGraveNear(Vector3 pos, float maxDist) {
+        TombStone? best = null;
+        float bestDist = maxDist;
+        foreach (var t in UnityEngine.Object.FindObjectsOfType<TombStone>()) {
+            var nv = t.GetComponent<ZNetView>();
+            if (nv == null || !nv.IsValid()) continue;
+            if (nv.TryGetZdo<DownedMarker.View>(out var graveView) && graveView.IsDownedMarker) continue;
+            float d = Vector3.Distance(t.transform.position, pos);
+            if (d <= bestDist) { bestDist = d; best = t; }
+        }
+        return best;
+    }
+
+    /// <summary>
+    /// A downed player who dies with an empty inventory gets no grave at all
+    /// (vanilla CreateTombStone requires items) -- the marker must not simply
+    /// vanish: it despawns the way an emptied grave does, crumble effect and all.
+    /// </summary>
+    private IEnumerator Test_EmptyInventoryCrumbles() {
+        const string T = "empty_death_crumbles_marker";
+        var player = Player.m_localPlayer;
+        if (player == null || player.IsDead()) { Record(T, false, "no alive player"); yield break; }
+        player.SetHealth(player.GetMaxHealth());
+        player.GetInventory().RemoveAll(); // nothing to drop -> vanilla spawns no grave
+        yield return null;
+
+        player.SetHealth(0f);
+        float w = 0f;
+        while (w < 5f && !player.IsDowned()) { w += Time.unscaledDeltaTime; yield return null; }
+        if (!player.IsDowned()) { Record(T, false, "could not down"); yield break; }
+        yield return new WaitForSecondsRealtime(0.5f);
+        var marker = player.FindDownedMarker();
+        if (marker == null) { Record(T, false, "no marker"); yield break; }
+        Vector3 markerPos = marker.transform.position;
+        int gravesBefore = CountRealGraves();
+
+        var zdo = player.m_nview.GetZdo<DownedPlayerZdo>();
+        zdo.DownedTime = (float)ZNet.instance.GetTimeSeconds() - Plugin.ReviveWindow - 5f;
+        w = 0f;
+        while (w < 10f && !player.IsDead()) { player.SetHealth(0f); w += Time.unscaledDeltaTime; yield return null; }
+        yield return new WaitForSecondsRealtime(1f);
+
+        bool dead = player.IsDead();
+        bool markerGone = marker == null || !marker;
+        bool crumbled = DownedMarker.LastCrumbleEffectCount > 0;
+        bool noNewGrave = CountRealGraves() == gravesBefore;
+        bool pendingCleared = !player.m_nview.GetZdo<DownedPlayerZdo>().GraveReplacePending;
+
+        Record(T, dead && markerGone && crumbled && noNewGrave && pendingCleared,
+            $"dead={dead} markerGone={markerGone} crumbleEffects={DownedMarker.LastCrumbleEffectCount} " +
+            $"noNewGrave={noNewGrave} (before={gravesBefore}) pendingCleared={pendingCleared}");
+    }
+
+    private static int CountRealGraves() {
+        int n = 0;
+        foreach (var t in UnityEngine.Object.FindObjectsOfType<TombStone>()) {
+            var nv = t.GetComponent<ZNetView>();
+            if (nv == null || !nv.IsValid()) continue;
+            if (nv.TryGetZdo<DownedMarker.View>(out var graveView) && graveView.IsDownedMarker) continue;
+            n++;
+        }
+        return n;
     }
 
     private static void GiveTestItem(Player player) {

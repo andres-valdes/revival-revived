@@ -76,6 +76,21 @@ static class PlayerLateUpdatePatch {
         if (__instance.IsDowned() && __instance.GetComponent<Revivable>() == null) {
             __instance.gameObject.AddComponent<Revivable>();
         }
+
+        // Dead corpse (we suppress the ragdoll, so the invisible player object
+        // lingers until respawn): keep it inert on every client -- no collider
+        // to bump into, no physics drift. s_dead is replicated, so remotes see
+        // it too. The respawned player is a fresh object with a fresh collider.
+        if (__instance.IsDead()) {
+            if (__instance.m_collider != null && __instance.m_collider.enabled) {
+                __instance.m_collider.enabled = false;
+            }
+            if (__instance.m_nview != null && __instance.m_nview.IsValid()
+                && __instance.m_nview.IsOwner()
+                && __instance.m_body != null && !__instance.m_body.isKinematic) {
+                __instance.m_body.isKinematic = true;
+            }
+        }
     }
 }
 
@@ -108,14 +123,15 @@ static class PlayerOnRespawnPatch {
 }
 
 /// <summary>
-/// Hide the floating name/health bar for downed players -- the body is
-/// invisible, so a hovering health bar over empty air (or over the marker)
-/// is wrong; the green tombstone marker is the downed indicator.
+/// Hide the floating name/health bar for downed AND dead players -- the body
+/// is invisible in both states (vanilla TestShow never checks IsDead; the
+/// ragdoll usually masks that, but we suppress ragdolls), so a nameplate over
+/// empty air is wrong; the marker/grave is the indicator.
 /// </summary>
 [HarmonyPatch(typeof(EnemyHud), "TestShow")]
 static class EnemyHudHideDownedPatch {
     static void Postfix(Character c, ref bool __result) {
-        if (__result && c is Player p && p.IsDowned()) {
+        if (__result && c is Player p && (p.IsDowned() || p.IsDead())) {
             __result = false;
         }
     }

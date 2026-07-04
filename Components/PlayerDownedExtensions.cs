@@ -103,20 +103,18 @@ public static class PlayerDownedExtensions {
     }
 
     /// <summary>
-    /// The window ran out: clear the flag and remove the marker; the CheckDeath
-    /// patch then lets vanilla OnDeath spawn the real grave in its place.
+    /// The window ran out: clear the flag; the CheckDeath patch then lets
+    /// vanilla OnDeath run. The marker is deliberately NOT destroyed here -- it
+    /// outlives the death so the handoff to the real grave (or the crumble, if
+    /// no grave spawns) is gap-free; the grave-spawn and OnDeath patches consume
+    /// the replace request. The corpse also stays collider-off/kinematic: the
+    /// dead-body enforcement keeps it inert until respawn.
     /// </summary>
     public static void ExpireDownedState(this Player player) {
         if (player == null || !player.m_nview.IsValid()) return;
 
         var zdo = player.m_nview.GetZdo<DownedPlayerZdo>();
         zdo.Downed = false;
-
-        // Vanilla death needs the body back under physics control right now
-        // (OnDeath runs this same tick); the Revivable teardown skips dead
-        // players, so do it here.
-        player.m_collider.enabled = true;
-        player.m_body.isKinematic = false;
 
         var marker = player.FindDownedMarker();
         if (marker != null) {
@@ -125,7 +123,6 @@ public static class PlayerDownedExtensions {
             zdo.GraveReplacePending = true;
             zdo.GraveReplacePos = marker.transform.position;
         }
-        DownedMarker.DestroyLinkedMarker(ref zdo);
 
         Plugin.Logger.LogInfo($"{player.GetPlayerName()} revive window expired, proceeding to death");
     }
