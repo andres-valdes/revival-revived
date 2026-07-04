@@ -116,50 +116,35 @@ obj.SetActive(true);
 
 ## Step 3: Store Custom Data on the ZDO
 
-Networked fields are declared as a typed schema. The **ZdoTyped** generator
-(sibling repo `../zdo-typed`) turns each `[ZdoField]` into the matching ZDO
-`Get`/`Set` with its stable-hash key baked in as a compile-time constant
-(hashed via `GetStableHashCode`, parity-tested against `assembly_utils.dll`).
+Custom fields live in the ZDO's extra-data dictionaries, keyed by the stable
+hash of a name. Precompute the hashes once and read/write through the vanilla
+ZDO primitives. Prefix the names with your mod to avoid collisions.
 
 ```csharp
-[ZdoSchema("MyMod")]                       // keys become "MyMod_<field>"
-public partial struct State {
-    [ZdoField] public partial int Level { get; set; }
-    [ZdoField(Default = "inactive")] public partial string Mode { get; set; }
-    [ZdoField] public partial ZDOID Target { get; set; }   // vanilla _u/_i pair
+static class Keys {
+    public static readonly int Level = "MyMod_Level".GetStableHashCode();
+    public static readonly int Mode  = "MyMod_Mode".GetStableHashCode();
+    public static readonly KeyValuePair<int, int> Target =
+        ZDO.GetHashZDOID("MyMod_Target");   // ZDOID stores as a _u/_i long pair
 }
+
+var zdo = m_nview.GetZDO();
+
+if (m_nview.IsOwner()) {                     // only the owner writes
+    zdo.Set(Keys.Level, 5);
+    zdo.Set(Keys.Mode, "active");
+    zdo.Set(Keys.Target, someZdoId);
+}
+
+int level  = zdo.GetInt(Keys.Level);         // anyone reads
+string mode = zdo.GetString(Keys.Mode, "inactive");
+ZDOID target = zdo.GetZDOID(Keys.Target);
 ```
 
-Nest the schema in its component and read/write through the generated
-`NetView` accessor — the type is inferred from the class, so there is no type
-parameter and nothing else to declare:
-
-```csharp
-public partial class MyThing : MonoBehaviour {
-    [ZdoSchema("MyMod")]
-    public partial struct State {
-        [ZdoField] public partial int Level { get; set; }
-    }
-
-    void Bump() {
-        if (!NetView.IsOwner) return;         // only the owner writes
-        var s = NetView.Zdo; s.Level += 1;    // writes go through a local
-    }
-    int Read() => NetView.Zdo.Level;          // anyone reads
-    bool Ready(out State s) => NetView.TryZdo(out s);
-}
-```
-
-`NetView` (a `ZView<State>`) exposes `.Zdo`, `.TryZdo(out v)`, `.IsValid`,
-`.IsOwner`, `.ClaimOwnership()`, `.Raw`. Where you hold a `ZNetView` but are
-not the nesting component, bind the same schema with the extensions:
-`m_nview.GetZdo<State>()` / `m_nview.TryGetZdo<State>(out var s)`.
-
-The schema name (`"MyMod"`) prefixes every field hash, keeping keys clear of
-vanilla and other mods. Generated `StateFieldHash` constants are available for
-interop with vanilla keys and `ZDOVars`. Misuse is a compile error
-(`ZDO001`–`ZDO006`). RevivalRevived's `DownedPlayerZdo` (top-level, on Player)
-and `DownedMarker.View` (nested → gets `NetView`) are the in-repo examples.
+Getters take a default: `GetInt`/`GetFloat`/`GetLong`/`GetBool`/`GetString`/
+`GetVec3`/`GetQuaternion(hash, default)` and `GetZDOID(pair)`. Setters are
+`Set(hash, value)` (owner only). RevivalRevived keeps its field-hash constants
+in `DownedKeys`.
 
 ## Step 4: RPCs for Multiplayer Communication
 
@@ -196,30 +181,28 @@ RevivalRevived's `DownedKeys` holds its RPC name constants.
 ## Step 5: Handle ZNetView Lifecycle in Your Components
 
 ```csharp
-public partial class MyCustomBehaviour : MonoBehaviour {
-    [ZdoSchema("MyMod")]
-    public partial struct State { [ZdoField] public partial int Level { get; set; } }
-
+public class MyCustomBehaviour : MonoBehaviour {
+    static readonly int s_level = "MyMod_Level".GetStableHashCode();
     private ZNetView m_nview = null!;
 
     void Awake() {
         m_nview = GetComponent<ZNetView>();
         // Register handlers once the object exists. Guard: the ZDO may not be
         // valid yet during loading.
-        if (!NetView.IsValid) return;
+        if (!m_nview.IsValid()) return;
         m_nview.Register<int>("MyMod_SetLevel", (long sender, int level) => {
-            if (!NetView.IsOwner) return;
-            var s = NetView.Zdo; s.Level = level;
+            if (!m_nview.IsOwner()) return;
+            m_nview.GetZDO().Set(s_level, level);
         });
     }
 
     void Update() {
         // Always check validity -- the ZDO can be released when the object
         // leaves the active area.
-        if (!NetView.IsValid) return;
+        if (!m_nview.IsValid()) return;
 
         // Only the owner runs authoritative logic.
-        if (!NetView.IsOwner) return;
+        if (!m_nview.IsOwner()) return;
 
         // ... owner-side update ...
     }
@@ -242,13 +225,6 @@ static class ZNetScene_Awake_Patch {
     }
 }
 ```
-
-## Generator
-
-Typed ZDO schemas come from the sibling repo `../zdo-typed`
-(https://github.com/andres-valdes/zdo-typed), referenced as an analyzer. Its
-`README.md` is the full reference for the attributes (`[ZdoSchema]` /
-`[ZdoField]`), the `NetView` component accessor, and the diagnostics.
 
 ## Common Pitfalls
 

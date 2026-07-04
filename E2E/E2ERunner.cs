@@ -6,7 +6,6 @@ using System.Text;
 using BepInEx;
 using HarmonyLib;
 using RevivalRevived.Components;
-using ZdoTyped;
 using UnityEngine;
 
 namespace RevivalRevived.E2E;
@@ -439,7 +438,7 @@ public class E2ERunner : MonoBehaviour {
             markerGone = DownedMarker.FindFor(pid) == null;
             foreach (var t in UnityEngine.Object.FindObjectsOfType<TombStone>()) {
                 var nv = t.GetComponent<ZNetView>();
-                if (nv.TryGetZdo<DownedMarker.View>(out var gv) && !gv.IsDownedMarker) { realTombstone = true; break; }
+                if (nv != null && nv.IsValid() && !nv.GetZDO().GetBool(DownedKeys.IsDownedMarker)) { realTombstone = true; break; }
             }
             if (diedOnReconnect && markerGone) break;
             w += Time.unscaledDeltaTime;
@@ -488,15 +487,14 @@ public class E2ERunner : MonoBehaviour {
 
     private void DumpLeaks(string context) {
         foreach (var zdo in MarkerZdos()) {
-            var view = zdo.GetZdo<DownedMarker.View>();
-            var playerZdo = view.Player != ZDOID.None ? ZDOMan.instance.GetZDO(view.Player) : null;
-            var playerView = playerZdo != null ? playerZdo.GetZdo<DownedPlayerZdo>() : default;
-            bool playerDowned = playerZdo != null && playerView.Downed;
+            var playerZdoId = zdo.GetZDOID(DownedKeys.MarkerPlayer);
+            var playerZdo = playerZdoId != ZDOID.None ? ZDOMan.instance.GetZDO(playerZdoId) : null;
+            bool playerDowned = playerZdo != null && playerZdo.GetBool(DownedKeys.Downed);
             var instance = ZNetScene.instance.FindInstance(zdo.m_uid);
             Log($"E2E-LEAK[{context}] zdo {zdo.m_uid}: owner={zdo.GetOwner()} mine={zdo.IsOwner()} " +
                 $"ownerRev={zdo.OwnerRevision} dataRev={zdo.DataRevision} " +
-                $"replaced={view.ReplacedByGrave} playerZdo={(playerZdo != null ? "alive" : "gone")} " +
-                $"playerDowned={playerDowned} playerProg={(playerZdo != null ? playerView.ReviveProgress : 0f):F2} " +
+                $"replaced={zdo.GetBool(DownedKeys.ReplacedByGrave)} playerZdo={(playerZdo != null ? "alive" : "gone")} " +
+                $"playerDowned={playerDowned} playerProg={(playerZdo != null ? playerZdo.GetFloat(DownedKeys.ReviveProgress) : 0f):F2} " +
                 $"instance={(instance != null ? "yes" : "no")}");
         }
         foreach (var ghost in GhostMarkers()) {
@@ -586,8 +584,8 @@ public class E2ERunner : MonoBehaviour {
             if (!me.IsDowned()) { Record("reviveloop_victim", false, $"cycle {cycle}: revived before expiry could fire"); yield break; }
 
             // Die mid-channel: force the window into the past.
-            var zdo = me.m_nview.GetZdo<DownedPlayerZdo>();
-            zdo.DownedTime = (float)ZNet.instance.GetTimeSeconds() - Plugin.ReviveWindow - 5f;
+            var zdo = me.m_nview.GetZDO();
+            zdo.Set(DownedKeys.DownedTime, (float)ZNet.instance.GetTimeSeconds() - Plugin.ReviveWindow - 5f);
             w = 0f;
             while (w < 12f && !me.IsDead()) { me.SetHealth(0f); w += Time.unscaledDeltaTime; yield return null; }
             if (!me.IsDead()) { Record("reviveloop_victim", false, $"cycle {cycle}: expiry did not kill"); yield break; }
@@ -705,7 +703,7 @@ public class E2ERunner : MonoBehaviour {
         // downed player, hold position steadily (no per-frame teleport), and have
         // NO ragdoll anywhere.
         var nview = marker.GetComponent<ZNetView>();
-        bool isMarkerFlag = nview.TryGetZdo<DownedMarker.View>(out var markerView) && markerView.IsDownedMarker;
+        bool isMarkerFlag = nview != null && nview.IsValid() && nview.GetZDO().GetBool(DownedKeys.IsDownedMarker);
         var dm = marker.GetComponent<DownedMarker>();
         bool green = dm != null && dm.IsGreen();
         bool hasInteractable = marker.GetComponentInChildren<ReviveInteractable>() != null;
@@ -851,7 +849,6 @@ public class E2ERunner : MonoBehaviour {
         Log($"E2E: local player ready: {player.GetPlayerName()} hp={player.GetHealth()}/{player.GetMaxHealth()}");
         yield return new WaitForSecondsRealtime(2f);
 
-        yield return StartCoroutine(Test_ZdoTypedHashParity());
         yield return StartCoroutine(Test_LethalDamageDowns());
         yield return StartCoroutine(Test_DownedConstraints());
         yield return StartCoroutine(Test_MarkerColorGradient());
@@ -863,30 +860,6 @@ public class E2ERunner : MonoBehaviour {
         yield return StartCoroutine(Test_ExpiryKills());
         yield return StartCoroutine(WaitForAlivePlayer());
         yield return StartCoroutine(Test_EmptyInventoryCrumbles());
-    }
-
-    /// <summary>
-    /// The ZdoTyped generator bakes ZDO key hashes as compile-time constants;
-    /// they must equal the live game's GetStableHashCode for the same keys, or
-    /// every typed accessor would silently address the wrong ZDO fields.
-    /// </summary>
-    private IEnumerator Test_ZdoTypedHashParity() {
-        const string T = "zdo_typed_hash_parity";
-        bool ok = DownedPlayerZdo.DownedHash == "RevivalRevived_downed".GetStableHashCode()
-            && DownedPlayerZdo.DownedTimeHash == "RevivalRevived_downedTime".GetStableHashCode()
-            && DownedPlayerZdo.GraveReplacePendingHash == "RevivalRevived_graveReplacePending".GetStableHashCode()
-            && DownedPlayerZdo.GraveReplacePosHash == "RevivalRevived_graveReplacePos".GetStableHashCode()
-            && DownedPlayerZdo.MarkerHashPair.Key == "RevivalRevived_markerZDOID_u".GetStableHashCode()
-            && DownedPlayerZdo.MarkerHashPair.Value == "RevivalRevived_markerZDOID_i".GetStableHashCode()
-            && DownedPlayerZdo.ReviveProgressHash == "RevivalRevived_reviveProgress".GetStableHashCode()
-            && DownedMarker.View.IsDownedMarkerHash == "RevivalRevived_isDownedMarker".GetStableHashCode()
-            && DownedMarker.View.OwnerPlayerIdHash == "RevivalRevived_ownerPlayerID".GetStableHashCode()
-            && DownedMarker.View.OwnerNameHash == "ownerName".GetStableHashCode()
-            && DownedMarker.View.OwnerNameHash == ZDOVars.s_ownerName
-            && DownedMarker.View.PlayerHashPair.Key == "RevivalRevived_playerZDOID_u".GetStableHashCode()
-            && DownedMarker.View.PlayerHashPair.Value == "RevivalRevived_playerZDOID_i".GetStableHashCode();
-        Record(T, ok, $"generatedHashesMatchGame={ok}");
-        yield return null;
     }
 
     private IEnumerator Test_LethalDamageDowns() {
@@ -941,8 +914,8 @@ public class E2ERunner : MonoBehaviour {
         // Simulate half the window having elapsed. The gradient clock is the
         // PLAYER's downedTime (single-writer: the marker ZDO belongs to the
         // channeling reviver's progress only).
-        var pzdo = player.m_nview.GetZdo<DownedPlayerZdo>();
-        pzdo.DownedTime -= Plugin.ReviveWindow * 0.5f;
+        var pzdo = player.m_nview.GetZDO();
+        pzdo.Set(DownedKeys.DownedTime, pzdo.GetFloat(DownedKeys.DownedTime) - Plugin.ReviveWindow * 0.5f);
         yield return null;
         yield return null;
 
@@ -977,9 +950,9 @@ public class E2ERunner : MonoBehaviour {
 
         // Simulate reconnect: fresh character (no downed ZDO state, full health),
         // orphan marker left behind.
-        var zdo = player.m_nview.GetZdo<DownedPlayerZdo>();
-        zdo.Downed = false;
-        zdo.Marker = ZDOID.None;
+        var zdo = player.m_nview.GetZDO();
+        zdo.Set(DownedKeys.Downed, false);
+        zdo.Set(DownedKeys.Marker, ZDOID.None);
         var rev = player.GetComponent<Revivable>();
         if (rev != null) UnityEngine.Object.Destroy(rev);
         player.SetHealth(player.GetMaxHealth());
@@ -1001,7 +974,7 @@ public class E2ERunner : MonoBehaviour {
         bool realTombstone = false;
         foreach (var t in UnityEngine.Object.FindObjectsOfType<TombStone>()) {
             var nv = t.GetComponent<ZNetView>();
-            if (nv.TryGetZdo<DownedMarker.View>(out var rgv) && !rgv.IsDownedMarker) { realTombstone = true; break; }
+            if (nv != null && nv.IsValid() && !nv.GetZDO().GetBool(DownedKeys.IsDownedMarker)) { realTombstone = true; break; }
         }
         bool noRagdolls = UnityEngine.Object.FindObjectsOfType<Ragdoll>().Length == 0;
 
@@ -1180,8 +1153,8 @@ public class E2ERunner : MonoBehaviour {
         Vector3 markerPos = markerBefore != null ? markerBefore.transform.position : Vector3.zero;
 
         // Force the window to have expired.
-        var zdo = player.m_nview.GetZdo<DownedPlayerZdo>();
-        zdo.DownedTime = (float)ZNet.instance.GetTimeSeconds() - Plugin.ReviveWindow - 5f;
+        var zdo = player.m_nview.GetZDO();
+        zdo.Set(DownedKeys.DownedTime, (float)ZNet.instance.GetTimeSeconds() - Plugin.ReviveWindow - 5f);
         waited = 0f;
         while (waited < 10f && !player.IsDead()) { player.SetHealth(0f); waited += Time.unscaledDeltaTime; yield return null; }
 
@@ -1235,7 +1208,7 @@ public class E2ERunner : MonoBehaviour {
         foreach (var t in UnityEngine.Object.FindObjectsOfType<TombStone>()) {
             var nv = t.GetComponent<ZNetView>();
             if (nv == null || !nv.IsValid()) continue;
-            if (nv.TryGetZdo<DownedMarker.View>(out var graveView) && graveView.IsDownedMarker) continue;
+            if (nv != null && nv.IsValid() && nv.GetZDO().GetBool(DownedKeys.IsDownedMarker)) continue;
             float d = Vector3.Distance(t.transform.position, pos);
             if (d <= bestDist) { bestDist = d; best = t; }
         }
@@ -1265,8 +1238,8 @@ public class E2ERunner : MonoBehaviour {
         Vector3 markerPos = marker.transform.position;
         int gravesBefore = CountRealGraves();
 
-        var zdo = player.m_nview.GetZdo<DownedPlayerZdo>();
-        zdo.DownedTime = (float)ZNet.instance.GetTimeSeconds() - Plugin.ReviveWindow - 5f;
+        var zdo = player.m_nview.GetZDO();
+        zdo.Set(DownedKeys.DownedTime, (float)ZNet.instance.GetTimeSeconds() - Plugin.ReviveWindow - 5f);
         w = 0f;
         while (w < 10f && !player.IsDead()) { player.SetHealth(0f); w += Time.unscaledDeltaTime; yield return null; }
         yield return new WaitForSecondsRealtime(1f);
@@ -1275,7 +1248,7 @@ public class E2ERunner : MonoBehaviour {
         bool markerGone = marker == null || !marker;
         bool crumbled = DownedMarker.LastCrumbleEffectCount > 0;
         bool noNewGrave = CountRealGraves() == gravesBefore;
-        bool pendingCleared = !player.m_nview.GetZdo<DownedPlayerZdo>().GraveReplacePending;
+        bool pendingCleared = !player.m_nview.GetZDO().GetBool(DownedKeys.GraveReplacePending);
 
         Record(T, dead && markerGone && crumbled && noNewGrave && pendingCleared,
             $"dead={dead} markerGone={markerGone} crumbleEffects={DownedMarker.LastCrumbleEffectCount} " +
@@ -1287,7 +1260,7 @@ public class E2ERunner : MonoBehaviour {
         foreach (var t in UnityEngine.Object.FindObjectsOfType<TombStone>()) {
             var nv = t.GetComponent<ZNetView>();
             if (nv == null || !nv.IsValid()) continue;
-            if (nv.TryGetZdo<DownedMarker.View>(out var graveView) && graveView.IsDownedMarker) continue;
+            if (nv != null && nv.IsValid() && nv.GetZDO().GetBool(DownedKeys.IsDownedMarker)) continue;
             n++;
         }
         return n;

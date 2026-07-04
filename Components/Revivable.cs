@@ -1,5 +1,4 @@
 using UnityEngine;
-using ZdoTyped;
 
 namespace RevivalRevived.Components;
 
@@ -81,13 +80,13 @@ public class Revivable : MonoBehaviour {
     /// channeling.
     /// </summary>
     private void UpdateReviveChannel() {
-        var zdo = m_nview!.GetZdo<DownedPlayerZdo>();
+        var zdo = m_nview!.GetZDO();
         bool channeling = Time.time - m_lastChannelTime < ChannelPingTimeout;
 
         if (channeling) {
             // A press-mode revive completes on the first ping.
             if (Plugin.RevivePressMode) {
-                zdo.ReviveProgress = 1f;
+                zdo.Set(DownedKeys.ReviveProgress, 1f);
                 m_player!.ReviveFromDowned(m_lastChannelSender);
                 return;
             }
@@ -95,7 +94,7 @@ public class Revivable : MonoBehaviour {
             PauseWindowClock(zdo, Time.deltaTime);
             m_progress += Time.deltaTime;
             if (m_progress >= Plugin.ReviveDuration) {
-                zdo.ReviveProgress = 1f;
+                zdo.Set(DownedKeys.ReviveProgress, 1f);
                 m_player!.ReviveFromDowned(m_lastChannelSender);
                 return;
             }
@@ -105,7 +104,7 @@ public class Revivable : MonoBehaviour {
             return; // idle: nothing to publish
         }
 
-        zdo.ReviveProgress = Mathf.Clamp01(m_progress / Plugin.ReviveDuration);
+        zdo.Set(DownedKeys.ReviveProgress, Mathf.Clamp01(m_progress / Plugin.ReviveDuration));
     }
 
     private void Restore() {
@@ -118,7 +117,8 @@ public class Revivable : MonoBehaviour {
     }
 
     /// <summary>Shift the downed clock forward by dt so the window doesn't drain while channeling.</summary>
-    private static void PauseWindowClock(DownedPlayerZdo zdo, float dt) => zdo.DownedTime += dt;
+    private static void PauseWindowClock(ZDO zdo, float dt) =>
+        zdo.Set(DownedKeys.DownedTime, zdo.GetFloat(DownedKeys.DownedTime) + dt);
 
     /// <summary>A reviver is channeling (routed ping). Records who, for the revive message.</summary>
     public void ChannelPing(long sender) {

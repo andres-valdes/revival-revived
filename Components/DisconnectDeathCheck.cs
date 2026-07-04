@@ -1,6 +1,5 @@
 using System.Collections;
 using UnityEngine;
-using ZdoTyped;
 
 namespace RevivalRevived.Components;
 
@@ -58,8 +57,8 @@ public class DisconnectDeathCheck : MonoBehaviour {
     private static void KillDowned(Player player) {
         if (player == null || !player.m_nview.IsValid() || !player.m_nview.IsOwner()) return;
 
-        var zdo = player.m_nview.GetZdo<DownedPlayerZdo>();
-        zdo.Downed = false;
+        var zdo = player.m_nview.GetZDO();
+        zdo.Set(DownedKeys.Downed, false);
 
         // The marker is NOT destroyed here: it outlives the death so the swap to
         // the real grave (or the crumble, when no grave spawns) is gap-free. The
@@ -72,8 +71,8 @@ public class DisconnectDeathCheck : MonoBehaviour {
                       : linked != null ? linked.transform.position
                       : (Vector3?)null;
         if (replaceAt != null) {
-            zdo.GraveReplacePending = true;
-            zdo.GraveReplacePos = replaceAt.Value;
+            zdo.Set(DownedKeys.GraveReplacePending, true);
+            zdo.Set(DownedKeys.GraveReplacePos, replaceAt.Value);
         }
 
         var rev = player.GetComponent<Revivable>();

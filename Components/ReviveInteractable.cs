@@ -1,5 +1,4 @@
 using UnityEngine;
-using ZdoTyped;
 
 namespace RevivalRevived.Components;
 
@@ -27,10 +26,15 @@ public class ReviveInteractable : MonoBehaviour, Hoverable, Interactable {
         m_nview = GetComponentInParent<ZNetView>();
     }
 
+    /// <summary>The character ZDOID this marker is linked to, or None.</summary>
+    private ZDOID LinkedPlayerZdoId() =>
+        m_nview != null && m_nview.IsValid()
+            ? m_nview.GetZDO().GetZDOID(DownedKeys.MarkerPlayer)
+            : ZDOID.None;
+
     /// <summary>The downed player linked to this marker, or null.</summary>
     private Player? FindDownedPlayer() {
-        if (!m_nview.TryGetZdo<DownedMarker.View>(out var view)) return null;
-        var playerZdoId = view.Player;
+        var playerZdoId = LinkedPlayerZdoId();
         if (playerZdoId == ZDOID.None) return null;
         var playerZdo = ZDOMan.instance.GetZDO(playerZdoId);
         if (playerZdo == null) return null;
@@ -55,10 +59,16 @@ public class ReviveInteractable : MonoBehaviour, Hoverable, Interactable {
     /// instance being unloaded by distance, which is not a disconnect.)
     /// </summary>
     private bool LinkedPlayerDisconnected() {
-        if (!m_nview.TryGetZdo<DownedMarker.View>(out var view)) return false;
-        var playerZdoId = view.Player;
+        var playerZdoId = LinkedPlayerZdoId();
         if (playerZdoId == ZDOID.None) return false;
         return ZDOMan.instance.GetZDO(playerZdoId) == null;
+    }
+
+    /// <summary>The downed player's name from the marker ZDO, or "Viking".</summary>
+    private string OwnerName() {
+        if (m_nview == null || !m_nview.IsValid()) return "Viking";
+        var name = m_nview.GetZDO().GetString(DownedKeys.OwnerName);
+        return string.IsNullOrEmpty(name) ? "Viking" : name;
     }
 
     public string GetHoverText() {
@@ -68,13 +78,12 @@ public class ReviveInteractable : MonoBehaviour, Hoverable, Interactable {
             // kills them on reconnect); tell the would-be reviver why there is
             // no revive prompt.
             if (LinkedPlayerDisconnected()) {
-                var who = m_nview!.GetZdo<DownedMarker.View>().OwnerName is { Length: > 0 } dcName ? dcName : "Viking";
-                return Localization.instance.Localize($"{who} (disconnected)");
+                return Localization.instance.Localize($"{OwnerName()} (disconnected)");
             }
             return "";
         }
 
-        var name = m_nview!.GetZdo<DownedMarker.View>().OwnerName is { Length: > 0 } n ? n : "Viking";
+        var name = OwnerName();
         var verb = Plugin.RevivePressMode ? "" : "Hold ";
         var text = $"{name} (downed)\n";
         text += $"[<color=yellow><b>{verb}$KEY_Use</b></color>] Revive ({player.GetDownedRemainingTime():F0}s)";
@@ -84,8 +93,7 @@ public class ReviveInteractable : MonoBehaviour, Hoverable, Interactable {
     public string GetHoverName() {
         if (m_nview == null || !m_nview.IsValid()) return "";
         if (FindDownedPlayer() != null || LinkedPlayerDisconnected()) {
-            var owner = m_nview.GetZdo<DownedMarker.View>().OwnerName;
-            return string.IsNullOrEmpty(owner) ? "Viking" : owner;
+            return OwnerName();
         }
         return "";
     }

@@ -1,5 +1,4 @@
 using UnityEngine;
-using ZdoTyped;
 
 namespace RevivalRevived.Components;
 
@@ -16,20 +15,21 @@ public static class PlayerDownedExtensions {
     //  Reads (any client)
     // -------------------------------------------------------------------
     public static bool IsDowned(this Player? player) {
-        return player != null
-            && player.m_nview.TryGetZdo<DownedPlayerZdo>(out var zdo)
-            && zdo.Downed;
+        var nview = player?.m_nview;
+        return nview != null && nview.IsValid() && nview.GetZDO().GetBool(DownedKeys.Downed);
     }
 
     public static bool IsReviveWindowExpired(this Player player) {
-        var downedTime = player.m_nview.GetZdo<DownedPlayerZdo>().DownedTime;
+        var downedTime = player.m_nview.GetZDO().GetFloat(DownedKeys.DownedTime);
         return (float)ZNet.instance.GetTimeSeconds() - downedTime > Plugin.ReviveWindow;
     }
 
     /// <summary>Seconds left in the revive window.</summary>
     public static float GetDownedRemainingTime(this Player? player) {
-        if (player == null || !player.m_nview.TryGetZdo<DownedPlayerZdo>(out var zdo)) return 0f;
-        return Mathf.Max(0f, Plugin.ReviveWindow - ((float)ZNet.instance.GetTimeSeconds() - zdo.DownedTime));
+        var nview = player?.m_nview;
+        if (nview == null || !nview.IsValid()) return 0f;
+        var downedTime = nview.GetZDO().GetFloat(DownedKeys.DownedTime);
+        return Mathf.Max(0f, Plugin.ReviveWindow - ((float)ZNet.instance.GetTimeSeconds() - downedTime));
     }
 
     /// <summary>
@@ -38,16 +38,16 @@ public static class PlayerDownedExtensions {
     /// revivers channel). Replicates to every client for the progress circle.
     /// </summary>
     public static float GetReviveProgress(this Player? player) {
-        if (player == null || !player.m_nview.TryGetZdo<DownedPlayerZdo>(out var zdo)) return 0f;
-        return zdo.ReviveProgress;
+        var nview = player?.m_nview;
+        return nview != null && nview.IsValid() ? nview.GetZDO().GetFloat(DownedKeys.ReviveProgress) : 0f;
     }
 
     /// <summary>The green marker tombstone linked to this player, on any client.</summary>
     public static GameObject? FindDownedMarker(this Player? player) {
-        if (player == null || !player.m_nview.TryGetZdo<DownedPlayerZdo>(out var zdo)) return null;
-        var markerId = zdo.Marker;
-        if (markerId == ZDOID.None) return null;
-        return ZNetScene.instance.FindInstance(markerId);
+        var nview = player?.m_nview;
+        if (nview == null || !nview.IsValid()) return null;
+        var markerId = nview.GetZDO().GetZDOID(DownedKeys.Marker);
+        return markerId == ZDOID.None ? null : ZNetScene.instance.FindInstance(markerId);
     }
 
     // -------------------------------------------------------------------
@@ -60,13 +60,13 @@ public static class PlayerDownedExtensions {
     /// which every client attaches in reaction to the replicated flag.
     /// </summary>
     public static void EnterDownedState(this Player player) {
-        var zdo = player.m_nview.GetZdo<DownedPlayerZdo>();
+        var zdo = player.m_nview.GetZDO();
 
-        zdo.GraveReplacePending = false; // stale replace must not leak in
-        zdo.ReviveProgress = 0f;         // fresh channel
+        zdo.Set(DownedKeys.GraveReplacePending, false); // stale replace must not leak in
+        zdo.Set(DownedKeys.ReviveProgress, 0f);         // fresh channel
 
-        zdo.Downed = true;
-        zdo.DownedTime = (float)ZNet.instance.GetTimeSeconds();
+        zdo.Set(DownedKeys.Downed, true);
+        zdo.Set(DownedKeys.DownedTime, (float)ZNet.instance.GetTimeSeconds());
 
         if (player.GetComponent<Revivable>() == null) {
             player.gameObject.AddComponent<Revivable>();
@@ -91,13 +91,12 @@ public static class PlayerDownedExtensions {
             return;
         }
 
-        var zdo = player.m_nview.GetZdo<DownedPlayerZdo>();
-        zdo.Downed = false;
+        player.m_nview.GetZDO().Set(DownedKeys.Downed, false);
 
         player.SetHealth(Mathf.Max(player.GetMaxHealth() * Plugin.ReviveHealthFraction, 1f));
 
         // The marker crumbles away like an emptied grave (not an instant blink).
-        DownedMarker.CrumbleLinkedMarker(ref zdo);
+        DownedMarker.CrumbleLinkedMarker(player.m_nview);
 
         player.Message(MessageHud.MessageType.Center, "You have been revived!");
         Plugin.Logger.LogInfo($"{player.GetPlayerName()} was revived by {ReviverName(reviverId)}");
@@ -114,15 +113,15 @@ public static class PlayerDownedExtensions {
     public static void ExpireDownedState(this Player player) {
         if (player == null || !player.m_nview.IsValid()) return;
 
-        var zdo = player.m_nview.GetZdo<DownedPlayerZdo>();
-        zdo.Downed = false;
+        var zdo = player.m_nview.GetZDO();
+        zdo.Set(DownedKeys.Downed, false);
 
         var marker = player.FindDownedMarker();
         if (marker != null) {
             // Ask the upcoming real grave to replace the marker in place (we own
             // this player ZDO; the grave-spawn patch consumes it).
-            zdo.GraveReplacePending = true;
-            zdo.GraveReplacePos = marker.transform.position;
+            zdo.Set(DownedKeys.GraveReplacePending, true);
+            zdo.Set(DownedKeys.GraveReplacePos, marker.transform.position);
         }
 
         Plugin.Logger.LogInfo($"{player.GetPlayerName()} revive window expired, proceeding to death");

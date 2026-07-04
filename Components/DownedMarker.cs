@@ -1,6 +1,5 @@
 using System.Collections.Generic;
 using UnityEngine;
-using ZdoTyped;
 
 namespace RevivalRevived.Components;
 
@@ -16,43 +15,12 @@ namespace RevivalRevived.Components;
 /// marker visually "becomes" a grave right as it converts to the real one.
 ///
 /// Conversion is idempotent and ZDO-driven: it runs on every client whose
-/// tombstone ZDO has <see cref="View.IsDownedMarker"/> set (owner spawns
-/// it directly; remotes convert from a <c>TombStone.Start</c> postfix).
+/// tombstone ZDO has the <see cref="DownedKeys.IsDownedMarker"/> flag set (owner
+/// spawns it directly; remotes convert from a <c>TombStone.Start</c> postfix).
+/// The marker's ZDO fields are keyed by <see cref="DownedKeys"/> and read/written
+/// through the vanilla ZDO primitives; the owner is its sole writer.
 /// </summary>
 public partial class DownedMarker : MonoBehaviour {
-    /// <summary>
-    /// Typed view over the marker's ZDO: immutable identity fields set once at
-    /// spawn by the downed player's owner (who is also the marker's owner),
-    /// plus the replace flag it sets at death. Nobody else ever writes here --
-    /// revive progress is owner-authoritative on the PLAYER's ZDO.
-    /// </summary>
-    [ZdoTyped.ZdoSchema("RevivalRevived")]
-    public partial struct View {
-        /// <summary>Distinguishes the revive marker from a real loot grave.</summary>
-        [ZdoTyped.ZdoField(Name = "isDownedMarker")] public partial bool IsDownedMarker { get; set; }
-
-        /// <summary>Stable PlayerID of the downed player (survives logout, unlike the character ZDOID).</summary>
-        [ZdoTyped.ZdoField(Name = "ownerPlayerID")] public partial long OwnerPlayerId { get; set; }
-
-        /// <summary>Spawn-time clock; gradient fallback when the player ZDO is gone.</summary>
-        [ZdoTyped.ZdoField(Name = "downedTime")] public partial float DownedTime { get; set; }
-
-        /// <summary>Cross-link back to the downed player's character ZDO.</summary>
-        [ZdoTyped.ZdoField(Name = "playerZDOID")] public partial ZDOID Player { get; set; }
-
-        /// <summary>Vanilla world-text key, shared with real graves.</summary>
-        [ZdoTyped.ZdoField(Name = "ownerName", NoPrefix = true)] public partial string OwnerName { get; set; }
-
-        /// <summary>
-        /// The real loot grave has spawned in this marker's place. Each client
-        /// hides the marker locally once it can SEE that grave (destroy/create
-        /// packets are not ordered across the network, so destroying the ZDO
-        /// immediately leaves a visible one-frame-or-worse gap on remotes); the
-        /// ZDO itself is destroyed after a grace period.
-        /// </summary>
-        [ZdoTyped.ZdoField(Name = "replacedByGrave")] public partial bool ReplacedByGrave { get; set; }
-    }
-
     /// <summary>Revive-window accent colour at full time remaining.</summary>
     public static readonly Color ReviveGreen = new(0.25f, 1f, 0.35f);
 
@@ -107,16 +75,14 @@ public partial class DownedMarker : MonoBehaviour {
             return;
         }
 
-        var markerZdo = nview.GetZdo<View>();
-        var playerZdo = player.m_nview.GetZdo<DownedPlayerZdo>();
+        var markerZdo = nview.GetZDO();
+        markerZdo.Set(DownedKeys.IsDownedMarker, true);          // distinguishes from real graves
+        markerZdo.Set(DownedKeys.MarkerPlayer, player.m_nview.GetZDO().m_uid);
+        markerZdo.Set(DownedKeys.OwnerPlayerId, player.GetPlayerID()); // stable across rejoin
+        markerZdo.Set(DownedKeys.OwnerName, player.GetPlayerName());   // world text
+        markerZdo.Set(DownedKeys.DownedTime, (float)ZNet.instance.GetTimeSeconds()); // fallback clock
 
-        markerZdo.IsDownedMarker = true; // distinguishes from real graves
-        markerZdo.Player = player.m_nview.GetZDO().m_uid;
-        markerZdo.OwnerPlayerId = player.GetPlayerID(); // stable across rejoin
-        markerZdo.OwnerName = player.GetPlayerName();   // world text
-        markerZdo.DownedTime = (float)ZNet.instance.GetTimeSeconds(); // fallback clock
-
-        playerZdo.Marker = nview.GetZDO().m_uid;
+        player.m_nview.GetZDO().Set(DownedKeys.Marker, nview.GetZDO().m_uid);
 
         // Vanilla tombstone "drop-in" pop (TombStone.Setup normally does this;
         // our marker has no TombStone script).
@@ -136,12 +102,12 @@ public partial class DownedMarker : MonoBehaviour {
         foreach (var dm in Object.FindObjectsOfType<DownedMarker>()) {
             var nv = dm.GetComponent<ZNetView>();
             if (nv == null || !nv.IsValid()) continue;
-            var view = nv.GetZdo<View>();
+            var zdo = nv.GetZDO();
             // A replaced marker is a lame-duck prop awaiting destruction, not
             // evidence of a downed player (it must not re-trigger the
             // reconnect-death check while it lingers).
-            if (view.ReplacedByGrave) continue;
-            if (view.OwnerPlayerId == playerId) return dm.gameObject;
+            if (zdo.GetBool(DownedKeys.ReplacedByGrave)) continue;
+            if (zdo.GetLong(DownedKeys.OwnerPlayerId) == playerId) return dm.gameObject;
         }
         return null;
     }
@@ -149,16 +115,15 @@ public partial class DownedMarker : MonoBehaviour {
     /// <summary>
     /// The real grave has spawned in this marker's place: flag the marker ZDO so
     /// every client swaps its presentation locally, gap-free (see
-    /// <see cref="View.ReplacedByGrave"/>). The instance handles hide + delayed
-    /// destroy in its Update.
+    /// <see cref="DownedKeys.ReplacedByGrave"/>). The instance handles hide +
+    /// delayed destroy in its Update.
     /// </summary>
     public static void MarkReplaced(GameObject? marker) {
         if (marker == null) return;
         var nview = marker.GetComponent<ZNetView>();
         if (nview == null || !nview.IsValid()) return;
         if (!nview.IsOwner()) nview.ClaimOwnership();
-        var view = nview.GetZdo<View>();
-        view.ReplacedByGrave = true;
+        nview.GetZDO().Set(DownedKeys.ReplacedByGrave, true);
     }
 
     /// <summary>Effect objects created by the last marker crumble (test hook).</summary>
@@ -200,14 +165,15 @@ public partial class DownedMarker : MonoBehaviour {
     }
 
     /// <summary>
-    /// Crumble away the marker linked from a player's typed view and clear the
-    /// link: plays the grave despawn effect, then destroys. Used on revive --
-    /// the marker should visibly crumble, not blink out.
+    /// Crumble away the marker linked from a player's ZDO and clear the link:
+    /// plays the grave despawn effect, then destroys. Used on revive -- the
+    /// marker should visibly crumble, not blink out.
     /// </summary>
-    public static void CrumbleLinkedMarker(ref DownedPlayerZdo playerZdo) {
-        var markerId = playerZdo.Marker;
+    public static void CrumbleLinkedMarker(ZNetView playerNview) {
+        var playerZdo = playerNview.GetZDO();
+        var markerId = playerZdo.GetZDOID(DownedKeys.Marker);
         if (markerId == ZDOID.None) return;
-        playerZdo.Marker = ZDOID.None;
+        playerZdo.Set(DownedKeys.Marker, ZDOID.None);
         Crumble(ZNetScene.instance.FindInstance(markerId));
     }
 
@@ -308,9 +274,8 @@ public partial class DownedMarker : MonoBehaviour {
     private void Start() {
         // Show the downed player's name like a vanilla grave would (the ZDO is
         // populated by the time Start runs, on the spawner and on remotes).
-        // NetView is generated from the nested View schema -- no type parameter.
-        if (!NetView.TryZdo(out var view)) return;
-        var ownerName = view.OwnerName;
+        if (m_nview == null || !m_nview.IsValid()) return;
+        var ownerName = m_nview.GetZDO().GetString(DownedKeys.OwnerName);
         if (string.IsNullOrEmpty(ownerName)) return;
         var worldText = GetComponentInChildren<TMPro.TMP_Text>(true);
         if (worldText != null) worldText.text = ownerName;
@@ -440,11 +405,11 @@ public partial class DownedMarker : MonoBehaviour {
 
     private void Update() {
         if (m_nview == null || !m_nview.IsValid()) return;
-        var view = NetView.Zdo; // typed from the nested View schema, no <View>
+        var zdo = m_nview.GetZDO();
 
         // The real grave took our place: hide once it is visible here, destroy
         // the ZDO after a grace period. No gradient/interaction from here on.
-        if (view.ReplacedByGrave) {
+        if (zdo.GetBool(DownedKeys.ReplacedByGrave)) {
             UpdateReplaced();
             return;
         }
@@ -452,11 +417,11 @@ public partial class DownedMarker : MonoBehaviour {
         // Blend from green back to the grave's own red as the window elapses.
         // The clock is read from the LINKED PLAYER's ZDO (its owner maintains it,
         // including the pause-while-channeling shift).
-        var playerZdoId = view.Player;
+        var playerZdoId = zdo.GetZDOID(DownedKeys.MarkerPlayer);
         var playerZdo = playerZdoId != ZDOID.None ? ZDOMan.instance.GetZDO(playerZdoId) : null;
         var downedTime = playerZdo != null
-            ? playerZdo.GetZdo<DownedPlayerZdo>().DownedTime
-            : view.DownedTime; // fallback: spawn-time value
+            ? playerZdo.GetFloat(DownedKeys.DownedTime)
+            : zdo.GetFloat(DownedKeys.DownedTime); // fallback: marker's spawn-time value
         var elapsed = (float)ZNet.instance.GetTimeSeconds() - downedTime;
         ApplyBlend(Mathf.Clamp01(elapsed / Plugin.ReviveWindow));
     }

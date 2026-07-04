@@ -34,12 +34,6 @@
     <Compile Remove="Patches/NetworkBackendPatch.cs" />
   </ItemGroup>
 
-  <!-- ZdoTyped source generator: strongly-typed ZDO schemas -->
-  <ItemGroup>
-    <ProjectReference Include="../zdo-typed/src/ZdoTyped.Generator/ZdoTyped.Generator.csproj"
-                      OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
-  </ItemGroup>
-
   <!-- BepInEx core assemblies from local install -->
   <ItemGroup>
     <Reference Include="BepInEx">
