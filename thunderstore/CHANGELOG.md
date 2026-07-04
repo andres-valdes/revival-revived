@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.1
+
+- Rewrote the mod page with full usage details.
+- New icon.
+- The dev/test harness is no longer compiled into release builds (smaller DLL,
+  no test hooks).
+
 ## 0.1.0
 
 Initial release.
