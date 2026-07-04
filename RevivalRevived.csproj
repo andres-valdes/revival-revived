@@ -27,6 +27,13 @@
     <PackageReference Include="BepInEx.AssemblyPublicizer.MSBuild" Version="0.4.3" PrivateAssets="all" />
   </ItemGroup>
 
+  <!-- The E2E harness (and the CustomSocket network backend it drives) is a
+       dev/test tool only; Release builds ship without it entirely. -->
+  <ItemGroup Condition="'$(Configuration)' == 'Release'">
+    <Compile Remove="E2E/**/*.cs" />
+    <Compile Remove="Patches/NetworkBackendPatch.cs" />
+  </ItemGroup>
+
   <!-- ZdoTyped source generator: strongly-typed ZDO schemas -->
   <ItemGroup>
     <ProjectReference Include="../zdo-typed/src/ZdoTyped.Generator/ZdoTyped.Generator.csproj"

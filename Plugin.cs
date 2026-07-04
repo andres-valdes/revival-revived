@@ -27,20 +27,24 @@ public class Plugin : BaseUnityPlugin {
     internal static ConfigEntry<float> ReviveHoldTimeCfg = null!;
     internal static ConfigEntry<float> ReviveWindowCfg = null!;
 
-    /// <summary>Revive window duration in seconds (RR_E2E_WINDOW overrides for tests).</summary>
+    /// <summary>Revive window duration in seconds (RR_E2E_WINDOW overrides for tests; Debug builds only).</summary>
     public static float ReviveWindow {
         get {
+#if DEBUG
             if (s_windowEnvOverride > 0f) return s_windowEnvOverride;
+#endif
             return ReviveWindowCfg?.Value ?? 30f;
         }
     }
 
+#if DEBUG
     private static readonly float s_windowEnvOverride = ReadWindowOverride();
 
     private static float ReadWindowOverride() {
         var s = System.Environment.GetEnvironmentVariable("RR_E2E_WINDOW");
         return float.TryParse(s, out var v) && v > 0f ? v : 0f;
     }
+#endif
 
     /// <summary>How long the channeled revive hold takes (Hold mode).</summary>
     public static float ReviveDuration => UnityEngine.Mathf.Max(0.1f, ReviveHoldTimeCfg?.Value ?? 4f);
@@ -69,10 +73,13 @@ public class Plugin : BaseUnityPlugin {
 
         _harmony = Harmony.CreateAndPatchAll(typeof(Plugin).Assembly, PluginGuid);
 
-        // Autonomous end-to-end test harness (opt-in via RR_E2E=1).
+#if DEBUG
+        // Autonomous end-to-end test harness (opt-in via RR_E2E=1; the whole
+        // E2E/ tree is compiled out of Release builds).
         if (System.Environment.GetEnvironmentVariable("RR_E2E") == "1") {
             E2E.E2ERunner.Bootstrap();
         }
+#endif
     }
 
     private void OnDestroy() {

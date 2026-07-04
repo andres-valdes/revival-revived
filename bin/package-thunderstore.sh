@@ -51,6 +51,12 @@ dotnet build "$NAME.csproj" -c Release -v q
 DLL="bin/Release/$NAME.dll"
 [[ -f "$DLL" ]] || fail "build output $DLL not found"
 
+# The E2E harness must be compiled out of Release (type names would appear in
+# the assembly metadata if it weren't).
+if strings "$DLL" | grep -qE "E2ERunner|E2EConfig|NetworkBackend"; then
+    fail "Release DLL still contains E2E harness types"
+fi
+
 # --- Stage & zip ---------------------------------------------------------
 STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT
