@@ -116,89 +116,114 @@ obj.SetActive(true);
 
 ## Step 3: Store Custom Data on the ZDO
 
-Define hash constants for your custom fields:
+Networked fields are declared as a typed schema. The **ZdoTyped** generator
+(sibling repo `../zdo-typed`) turns each `[ZdoField]` into the matching ZDO
+`Get`/`Set` with its stable-hash key baked in as a compile-time constant
+(hashed via `GetStableHashCode`, parity-tested against `assembly_utils.dll`).
 
 ```csharp
-static readonly int s_myLevel = "MyMod_Level".GetStableHashCode();
-static readonly int s_myState = "MyMod_State".GetStableHashCode();
+[ZdoSchema("MyMod")]                       // keys become "MyMod_<field>"
+public partial struct State {
+    [ZdoField] public partial int Level { get; set; }
+    [ZdoField(Default = "inactive")] public partial string Mode { get; set; }
+    [ZdoField] public partial ZDOID Target { get; set; }   // vanilla _u/_i pair
+}
 ```
 
-Read/write through the ZNetView's ZDO:
+Nest the schema in its component and read/write through the generated
+`NetView` accessor — the type is inferred from the class, so there is no type
+parameter and nothing else to declare:
 
 ```csharp
-var nview = GetComponent<ZNetView>();
-var zdo = nview.GetZDO();
+public partial class MyThing : MonoBehaviour {
+    [ZdoSchema("MyMod")]
+    public partial struct State {
+        [ZdoField] public partial int Level { get; set; }
+    }
 
-// Write (must be owner)
-if (nview.IsOwner()) {
-    zdo.Set(s_myLevel, 5);
-    zdo.Set(s_myState, "active");
+    void Bump() {
+        if (!NetView.IsOwner) return;         // only the owner writes
+        var s = NetView.Zdo; s.Level += 1;    // writes go through a local
+    }
+    int Read() => NetView.Zdo.Level;          // anyone reads
+    bool Ready(out State s) => NetView.TryZdo(out s);
 }
-
-// Read (anyone can read)
-int level = zdo.GetInt(s_myLevel);
-string state = zdo.GetString(s_myState, "inactive");
 ```
 
-**Prefix custom field names** (e.g., `"MyMod_Level"`) to avoid collisions with vanilla or other mods.
+`NetView` (a `ZView<State>`) exposes `.Zdo`, `.TryZdo(out v)`, `.IsValid`,
+`.IsOwner`, `.ClaimOwnership()`, `.Raw`. Where you hold a `ZNetView` but are
+not the nesting component, bind the same schema with the extensions:
+`m_nview.GetZdo<State>()` / `m_nview.TryGetZdo<State>(out var s)`.
 
-## Step 4: Register RPCs for Multiplayer Communication
+The schema name (`"MyMod"`) prefixes every field hash, keeping keys clear of
+vanilla and other mods. Generated `StateFieldHash` constants are available for
+interop with vanilla keys and `ZDOVars`. Misuse is a compile error
+(`ZDO001`–`ZDO006`). RevivalRevived's `DownedPlayerZdo` (top-level, on Player)
+and `DownedMarker.View` (nested → gets `NetView`) are the in-repo examples.
+
+## Step 4: RPCs for Multiplayer Communication
+
+RPCs are declared as a typed set. The **RpcTyped** generator (sibling repo
+`../rpc-typed`) emits the wire-name constants, the routed invokers, and the
+register/unregister companions.
 
 ```csharp
-void Awake() {
-    var nview = GetComponent<ZNetView>();
-
-    // Register handler
-    nview.Register<int, string>("MyMod_DoThing", RPC_DoThing);
-}
-
-void RPC_DoThing(long sender, int amount, string reason) {
-    // Runs on the peer that owns this object
-    Plugin.Logger.LogInfo($"DoThing called: {amount} because {reason}");
-}
-
-void RequestDoThing() {
-    var nview = GetComponent<ZNetView>();
-
-    // Send to owner
-    nview.InvokeRPC("MyMod_DoThing", 42, "because reasons");
-
-    // Send to everyone
-    nview.InvokeRPC(ZRoutedRpc.Everybody, "MyMod_DoThing", 42, "broadcast");
-
-    // Send to specific peer
-    nview.InvokeRPC(targetPeerID, "MyMod_DoThing", 42, "targeted");
+[RpcSet("MyMod")]                          // names become "MyMod_<method>"
+public partial struct Rpcs {
+    [Rpc] public partial void DoThing(int amount, string reason);
 }
 ```
+
+Bind the set to a `ZNetView` and use it:
+
+```csharp
+var rpcs = m_nview.GetRpcs<Rpcs>();
+rpcs.RegisterDoThing((long sender, int amount, string reason) => {
+    // runs on the receiving peer; sender is the caller's peer id
+});
+rpcs.DoThing(42, "reason");                 // routed to the ZDO owner
+rpcs.DoThingToAll(42, "broadcast");         // every peer + locally
+rpcs.DoThingTo(peerId, 42, "targeted");     // a specific peer
+```
+
+Nest the set in a component for a typed `Rpc` accessor (type inferred, no
+`GetRpcs<>`): `Rpc.DoThingToAll(...)`, `Rpc.RegisterDoThing(...)`.
+
+Parameter types are checked at compile time against what `ZRpc` serializes:
+`int`, `uint`, `long`, `float`, `double`, `bool`, `string`, `ZPackage`,
+`Vector3`, `Quaternion`, `ZDOID`, `HitData` — up to three per RPC. Misuse is a
+compile error (`RPC001`–`RPC005`). RevivalRevived's `DownedRpcs` (registered
+on Player) is the in-repo example.
 
 ## Step 5: Handle ZNetView Lifecycle in Your Components
 
 ```csharp
-public class MyCustomBehaviour : MonoBehaviour {
-    private ZNetView m_nview;
+public partial class MyCustomBehaviour : MonoBehaviour {
+    [ZdoSchema("MyMod")]
+    public partial struct State { [ZdoField] public partial int Level { get; set; } }
+
+    [RpcSet("MyMod")]
+    public partial struct Rpcs { [Rpc] public partial void SetLevel(int level); }
 
     void Awake() {
-        m_nview = GetComponent<ZNetView>();
-
-        // Guard: ZNetView might not have a valid ZDO yet during loading
-        if (m_nview.GetZDO() == null) return;
-
-        m_nview.Register<int>("MyMod_SetLevel", RPC_SetLevel);
+        // Register handlers once the object exists. Guard: the ZDO may not be
+        // valid yet during loading.
+        if (!NetView.IsValid) return;
+        Rpc.RegisterSetLevel((long sender, int level) => {
+            if (!NetView.IsOwner) return;
+            var s = NetView.Zdo; s.Level = level;
+        });
     }
 
     void Update() {
-        // Always check validity -- ZDO can be released if object leaves active area
-        if (m_nview == null || !m_nview.IsValid()) return;
+        // Always check validity -- the ZDO can be released when the object
+        // leaves the active area.
+        if (!NetView.IsValid) return;
 
-        // Only owner runs authoritative logic
-        if (!m_nview.IsOwner()) return;
+        // Only the owner runs authoritative logic.
+        if (!NetView.IsOwner) return;
 
-        // Your update logic here
-    }
-
-    void RPC_SetLevel(long sender, int level) {
-        if (!m_nview.IsOwner()) return;
-        m_nview.GetZDO().Set(s_myLevel, level);
+        // ... owner-side update ...
     }
 }
 ```
@@ -220,71 +245,13 @@ static class ZNetScene_Awake_Patch {
 }
 ```
 
-## Strongly-Typed ZDO Access: ZdoTyped (PREFER THIS)
+## Generators
 
-This workspace has a source generator for typed ZDO schemas: **`../zdo-typed`**
-(sibling repo, published at https://github.com/andres-valdes/zdo-typed). Read
-its `README.md` before writing raw `zdo.GetFloat(hash)`-style code -- new ZDO
-fields should be declared as schemas, not loose hash constants.
-
-```csharp
-[ZdoSchema("MyMod")]
-public partial struct MarkerZdo {
-    [ZdoField] public partial float ReviveProgress { get; set; }
-    [ZdoField(Name = "ownerName", NoPrefix = true)] public partial string OwnerName { get; set; }
-    [ZdoField] public partial ZDOID Player { get; set; }   // vanilla _u/_i pair
-}
-
-var view = m_nview.GetZdo<MarkerZdo>();          // typed view over the live ZDO
-view.ReviveProgress = 0.5f;                      // networked write, hash precomputed
-if (m_nview.TryGetZdo<MarkerZdo>(out var v)) ... // validity-guarded
-```
-
-**Prefer nesting the schema in its component** -- the generator then infers the
-type and adds a typed `NetView` accessor with NOTHING declared (no base class,
-no marker interface, no generic). This is how `DownedMarker` accesses its own
-ZDO:
-
-```csharp
-public partial class DownedMarker : MonoBehaviour {
-    [ZdoSchema("RevivalRevived")]
-    public partial struct View { [ZdoField] public partial float ReviveProgress { get; set; } }
-
-    void Update() {
-        if (!NetView.IsValid) return;
-        var p = NetView.Zdo.ReviveProgress;      // no <View>, inferred from the class
-        if (NetView.TryZdo(out var v)) { ... }
-    }
-}
-```
-
-`NetView` (a `ZView<View>`) exposes `.Zdo`, `.TryZdo(out v)`, `.IsValid`,
-`.IsOwner`, `.ClaimOwnership()`, `.Raw`. Keys hash via GetStableHashCode at
-COMPILE time (parity-tested against assembly_utils.dll); misuse is a compile
-error (ZDO001-ZDO006). RevivalRevived's `DownedPlayerZdo` (top-level, on
-Player) and `DownedMarker.View` (nested -> gets `NetView`) are the in-repo
-examples.
-
-## Strongly-Typed RPCs: RpcTyped (PREFER THIS)
-
-The sibling repo **`../rpc-typed`** does the same for ZNetView RPCs: declare an
-`[RpcSet("MyMod")]` partial struct with `[Rpc]` partial void methods and the
-generator emits the wire-name constants, owner-routed/`ToAll`/`To(peer)`
-invokes, and typed `Register`/`Unregister` companions -- no loose RPC name
-strings (RPC001-RPC005 diagnostics on misuse). Read its `README.md`;
-RevivalRevived's `DownedRpcs` is the in-repo example (top-level, registered on
-Player).
-
-```csharp
-var rpcs = m_nview.GetRpcs<DownedRpcs>();
-rpcs.RegisterChannel((long sender) => ...);
-rpcs.Channel();        // routed to owner
-rpcs.OnDownedToAll();  // everybody
-```
-
-Nest an `[RpcSet]` in a component and it gets a typed `Rpc` accessor with
-nothing declared (same inference as `NetView`): `Rpc.FireToAll(n)`,
-`Rpc.RegisterFire(...)` -- no `GetRpcs<T>()`, type inferred from the class.
+Typed ZDO schemas and RPC sets come from two sibling repos, referenced as
+analyzers: `../zdo-typed` (https://github.com/andres-valdes/zdo-typed) and
+`../rpc-typed`. Their `README.md` files are the full reference for the
+attributes (`[ZdoSchema]`/`[ZdoField]`, `[RpcSet]`/`[Rpc]`), the `NetView` and
+`Rpc` component accessors, and the diagnostics.
 
 ## Common Pitfalls
 
