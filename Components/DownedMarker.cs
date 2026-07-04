@@ -308,7 +308,8 @@ public partial class DownedMarker : MonoBehaviour {
     private void Start() {
         // Show the downed player's name like a vanilla grave would (the ZDO is
         // populated by the time Start runs, on the spawner and on remotes).
-        if (!m_nview.TryGetZdo<View>(out var view)) return;
+        // NetView is generated from the nested View schema -- no type parameter.
+        if (!NetView.TryZdo(out var view)) return;
         var ownerName = view.OwnerName;
         if (string.IsNullOrEmpty(ownerName)) return;
         var worldText = GetComponentInChildren<TMPro.TMP_Text>(true);
@@ -439,7 +440,7 @@ public partial class DownedMarker : MonoBehaviour {
 
     private void Update() {
         if (m_nview == null || !m_nview.IsValid()) return;
-        var view = m_nview.GetZdo<View>();
+        var view = NetView.Zdo; // typed from the nested View schema, no <View>
 
         // The real grave took our place: hide once it is visible here, destroy
         // the ZDO after a grace period. No gradient/interaction from here on.

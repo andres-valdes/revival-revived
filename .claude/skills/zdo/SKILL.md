@@ -238,12 +238,32 @@ public partial struct MarkerZdo {
 var view = m_nview.GetZdo<MarkerZdo>();          // typed view over the live ZDO
 view.ReviveProgress = 0.5f;                      // networked write, hash precomputed
 if (m_nview.TryGetZdo<MarkerZdo>(out var v)) ... // validity-guarded
-class Marker : ZdoComponent<MarkerZdo> { ... }   // attach-by-generic base
 ```
 
-Keys hash via GetStableHashCode at COMPILE time (parity-tested against
-assembly_utils.dll); misuse is a compile error (ZDO001-ZDO006). RevivalRevived's
-`DownedPlayerZdo` and `DownedMarker.View` are the in-repo examples.
+**Prefer nesting the schema in its component** -- the generator then infers the
+type and adds a typed `NetView` accessor with NOTHING declared (no base class,
+no marker interface, no generic). This is how `DownedMarker` accesses its own
+ZDO:
+
+```csharp
+public partial class DownedMarker : MonoBehaviour {
+    [ZdoSchema("RevivalRevived")]
+    public partial struct View { [ZdoField] public partial float ReviveProgress { get; set; } }
+
+    void Update() {
+        if (!NetView.IsValid) return;
+        var p = NetView.Zdo.ReviveProgress;      // no <View>, inferred from the class
+        if (NetView.TryZdo(out var v)) { ... }
+    }
+}
+```
+
+`NetView` (a `ZView<View>`) exposes `.Zdo`, `.TryZdo(out v)`, `.IsValid`,
+`.IsOwner`, `.ClaimOwnership()`, `.Raw`. Keys hash via GetStableHashCode at
+COMPILE time (parity-tested against assembly_utils.dll); misuse is a compile
+error (ZDO001-ZDO006). RevivalRevived's `DownedPlayerZdo` (top-level, on
+Player) and `DownedMarker.View` (nested -> gets `NetView`) are the in-repo
+examples.
 
 ## Strongly-Typed RPCs: RpcTyped (PREFER THIS)
 
@@ -251,15 +271,20 @@ The sibling repo **`../rpc-typed`** does the same for ZNetView RPCs: declare an
 `[RpcSet("MyMod")]` partial struct with `[Rpc]` partial void methods and the
 generator emits the wire-name constants, owner-routed/`ToAll`/`To(peer)`
 invokes, and typed `Register`/`Unregister` companions -- no loose RPC name
-strings (RPC001-RPC006 diagnostics on misuse). Read its `README.md`;
-RevivalRevived's `DownedRpcs` is the in-repo example.
+strings (RPC001-RPC005 diagnostics on misuse). Read its `README.md`;
+RevivalRevived's `DownedRpcs` is the in-repo example (top-level, registered on
+Player).
 
 ```csharp
 var rpcs = m_nview.GetRpcs<DownedRpcs>();
-rpcs.RegisterDoRevive((long sender) => ...);
+rpcs.RegisterChannel((long sender) => ...);
 rpcs.Channel();        // routed to owner
 rpcs.OnDownedToAll();  // everybody
 ```
+
+Nest an `[RpcSet]` in a component and it gets a typed `Rpc` accessor with
+nothing declared (same inference as `NetView`): `Rpc.FireToAll(n)`,
+`Rpc.RegisterFire(...)` -- no `GetRpcs<T>()`, type inferred from the class.
 
 ## Common Pitfalls
 
