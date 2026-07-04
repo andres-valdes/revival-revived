@@ -8,15 +8,18 @@ namespace RevivalRevived.Components;
 /// RpcTyped -- there are no loose RPC name strings anywhere; ZDO field access
 /// is likewise typed via the ZdoTyped schemas (<see cref="DownedPlayerZdo"/>
 /// and <see cref="DownedMarker.View"/>).
+///
+/// The revive is owner-authoritative: a reviver only sends <see cref="Channel"/>
+/// pings while it holds, and the downed player's own owner accumulates the
+/// progress, publishes it, and revives itself at completion. There is no
+/// "do the revive" RPC and no cross-client marker writing -- so nothing to
+/// race.
 /// </summary>
 [RpcSet("RevivalRevived")]
 public partial struct DownedRpcs {
     /// <summary>Broadcast: play the downed poof at the player (state is ZDO-driven).</summary>
     [Rpc] public partial void OnDowned();
 
-    /// <summary>Reviver -> owner: "someone is channeling", pauses the bleed-out window.</summary>
+    /// <summary>Reviver -> owner: "I am channeling a revive this moment." The owner accumulates progress and revives itself.</summary>
     [Rpc] public partial void Channel();
-
-    /// <summary>Reviver -> owner: the (peer-authoritative) hold completed, execute the revive.</summary>
-    [Rpc] public partial void DoRevive();
 }

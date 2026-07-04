@@ -112,6 +112,14 @@ public class E2ERunner : MonoBehaviour {
             yield break;
         }
 
+        // Revive-loop stress: repeated down/revive cycles hunting the leaked-
+        // marker race. RR_E2E_LOOP_DOWN picks which role goes down.
+        if (E2EConfig.IsReviveLoopScenario) {
+            if (E2EConfig.LoopDownRole == "host") yield return StartCoroutine(RunLoopVictim(player));
+            else yield return StartCoroutine(RunLoopReviver(player));
+            yield break;
+        }
+
         // Give the client a moment to settle, then go down.
         yield return new WaitForSecondsRealtime(2f);
         Log("E2E[host]: downing self");
@@ -205,20 +213,22 @@ public class E2ERunner : MonoBehaviour {
 
         orphan = DownedMarker.FindFor(downedPid);
         bool orphanPersists = orphan != null;
-        float residualProgress = 0f;
         string hover = "";
+        bool interactInert = true;
         if (orphan != null) {
-            var nv = orphan.GetComponent<ZNetView>();
-            residualProgress = nv.TryGetZdo<DownedMarker.View>(out var orphanView) ? orphanView.ReviveProgress : 0f;
             var inter = orphan.GetComponentInChildren<ReviveInteractable>();
-            hover = inter != null ? inter.GetHoverText() : "";
+            if (inter != null) {
+                // The linked player is gone: interact must be a no-op (there is
+                // no revive target, so no channel ping is sent to anyone).
+                interactInert = !inter.Interact(me, hold: true, alt: false);
+                hover = inter.GetHoverText();
+            }
         }
-        bool progressFizzled = residualProgress <= 0.01f;
         bool hoverExplains = hover.IndexOf("disconnected", StringComparison.OrdinalIgnoreCase) >= 0;
         bool onlyMe = Player.GetAllPlayers().Count == 1;
 
-        Record("vanish_channel_fizzles", orphanPersists && progressFizzled && hoverExplains && onlyMe,
-            $"orphanPersists={orphanPersists} residualProgress={residualProgress:F2} " +
+        Record("vanish_channel_fizzles", orphanPersists && interactInert && hoverExplains && onlyMe,
+            $"orphanPersists={orphanPersists} interactInert={interactInert} " +
             $"hoverExplains={hoverExplains} hover=\"{hover.Replace("\n", " | ")}\" onlyMe={onlyMe}");
     }
 
@@ -251,6 +261,12 @@ public class E2ERunner : MonoBehaviour {
             yield break;
         }
 
+        if (E2EConfig.IsReviveLoopScenario) {
+            if (E2EConfig.LoopDownRole == "client") yield return StartCoroutine(RunLoopVictim(me));
+            else yield return StartCoroutine(RunLoopReviver(me));
+            yield break;
+        }
+
         // Wait for the host to go down (replicated via ZDO).
         Log("E2E[client]: waiting for remote player to be downed...");
         Player? downed = null;
@@ -272,7 +288,7 @@ public class E2ERunner : MonoBehaviour {
         Log("E2E[client]: channeling revive on remote player...");
         waited = 0f;
         float interactSeconds = 0f, maxUiFill = 0f, lastProg = 0f, worstRegression = 0f;
-        bool uiSeen = false;
+        bool uiSeen = false, sawFull = false, reboundAfterFull = false;
         while (waited < 20f && downed.IsDowned()) {
             // Discover the interactable the way the game does -- via the hover
             // raycast -- so a blocked/unhoverable marker fails this test instead
@@ -284,13 +300,18 @@ public class E2ERunner : MonoBehaviour {
             }
             // Our locally-authoritative progress must NEVER glitch backwards to a
             // stale nonzero value while continuously channeling (a replicated
-            // snapshot clobbering local writes shows up here). The single reset
-            // to 0 when the hold completes is legitimate and excluded.
+            // snapshot clobbering local writes shows up here).
             var prog = downed.GetReviveProgress();
             if (prog > 0.02f && prog < lastProg - 0.01f) {
                 worstRegression = Mathf.Max(worstRegression, lastProg - prog);
             }
             lastProg = prog;
+            // Once the hold has completed (circle full), it must STAY full for
+            // the whole revive round-trip -- with real latency the old code
+            // restarted the channel from zero under a still-held key, which
+            // reads as the circle overflowing past 100% and re-filling.
+            if (prog >= 0.99f) sawFull = true;
+            else if (sawFull && prog > 0.05f && prog < 0.9f) reboundAfterFull = true;
             if (ReviveProgressUI.Visible) { uiSeen = true; maxUiFill = Mathf.Max(maxUiFill, ReviveProgressUI.Fill); }
             waited += Time.unscaledDeltaTime;
             yield return null;
@@ -299,10 +320,12 @@ public class E2ERunner : MonoBehaviour {
         Record("client_revived_remote", revivedRemote,
             $"downed={downed.IsDowned()} channelSecs={interactSeconds:F1}");
         // The radial progress UI must have shown on the reviver while channeling,
-        // and never fought/glitched backwards to stale values.
+        // never glitched backwards to stale values, and never rebuilt from zero
+        // after completing.
         bool monotonic = worstRegression < 0.05f;
-        Record("client_progress_ui", uiSeen && maxUiFill > 0.3f && monotonic,
-            $"uiSeen={uiSeen} maxFill={maxUiFill:F2} worstRegression={worstRegression:F2} monotonic={monotonic}");
+        Record("client_progress_ui", uiSeen && maxUiFill > 0.3f && monotonic && !reboundAfterFull,
+            $"uiSeen={uiSeen} maxFill={maxUiFill:F2} worstRegression={worstRegression:F2} monotonic={monotonic} " +
+            $"sawFull={sawFull} reboundAfterFull={reboundAfterFull}");
 
         // Regression (manual play): after the revive, the remote player must be
         // VISIBLE and solid again on this client -- the old RPC-based restore
@@ -318,6 +341,22 @@ public class E2ERunner : MonoBehaviour {
         }
         Record("client_host_visible_after_revive", visibleAgain && solidAgain,
             $"visible={visibleAgain} colliderOn={solidAgain} after={vw:F1}s");
+
+        // Regression (manual play): the marker must actually be DESTROYED on
+        // the reviver's client after a revive. The reviver's post-channel
+        // progress writes used to keep claiming the marker ZDO and could win
+        // the revision race against the owner's destroy, leaving an immortal
+        // marker slowly blending to red.
+        float mw = 0f;
+        bool markerDestroyed = false;
+        while (mw < 6f) {
+            markerDestroyed = UnityEngine.Object.FindObjectsOfType<DownedMarker>().Length == 0;
+            if (markerDestroyed) break;
+            mw += Time.unscaledDeltaTime;
+            yield return null;
+        }
+        Record("client_marker_gone_after_revive", markerDestroyed,
+            $"markerDestroyed={markerDestroyed} after={mw:F1}s");
     }
 
     /// <summary>
@@ -409,6 +448,246 @@ public class E2ERunner : MonoBehaviour {
         bool notDowned = Player.m_localPlayer == null || !Player.m_localPlayer.IsDowned();
         Record("reconnect_downed_dies", diedOnReconnect && markerGone && notDowned,
             $"died={diedOnReconnect} markerGone={markerGone} realTombstone={realTombstone} notDowned={notDowned}");
+    }
+
+    // =====================================================================
+    //  REVIVE-LOOP STRESS: hunt the leaked-marker race
+    // =====================================================================
+    /// <summary>Transient resurrection self-heals within ~2s; anything alive after this is a leak.</summary>
+    private const float LeakGraceSeconds = 8f;
+
+    /// <summary>
+    /// All live marker ZDOs, straight from ZDOMan -- a leak can exist at the
+    /// ZDO level with no local instance, so instance scans are not enough.
+    /// </summary>
+    private static List<ZDO> MarkerZdos() {
+        var result = new List<ZDO>();
+        int hash = DownedMarker.PrefabName.GetStableHashCode();
+        foreach (var kv in ZDOMan.instance.m_objectsByID) {
+            if (kv.Value.GetPrefab() == hash) result.Add(kv.Value);
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Ghost marker instances: GameObjects whose ZNetView holds a ZDO that
+    /// ZDOMan no longer tracks (or tracks as a DIFFERENT object after a
+    /// destroy+resurrect). These are unreachable by ZDOID lookups, invisible to
+    /// destroy RPCs, and live forever -- the pure ZDO scan cannot see them.
+    /// </summary>
+    private static List<DownedMarker> GhostMarkers() {
+        var ghosts = new List<DownedMarker>();
+        foreach (var dm in UnityEngine.Object.FindObjectsOfType<DownedMarker>()) {
+            var nv = dm.GetComponent<ZNetView>();
+            var zdoRef = nv != null ? nv.GetZDO() : null;
+            var registered = zdoRef != null ? ZDOMan.instance.GetZDO(zdoRef.m_uid) : null;
+            if (zdoRef == null || !ReferenceEquals(registered, zdoRef)) ghosts.Add(dm);
+        }
+        return ghosts;
+    }
+
+    private void DumpLeaks(string context) {
+        foreach (var zdo in MarkerZdos()) {
+            var view = zdo.GetZdo<DownedMarker.View>();
+            var playerZdo = view.Player != ZDOID.None ? ZDOMan.instance.GetZDO(view.Player) : null;
+            var playerView = playerZdo != null ? playerZdo.GetZdo<DownedPlayerZdo>() : default;
+            bool playerDowned = playerZdo != null && playerView.Downed;
+            var instance = ZNetScene.instance.FindInstance(zdo.m_uid);
+            Log($"E2E-LEAK[{context}] zdo {zdo.m_uid}: owner={zdo.GetOwner()} mine={zdo.IsOwner()} " +
+                $"ownerRev={zdo.OwnerRevision} dataRev={zdo.DataRevision} " +
+                $"replaced={view.ReplacedByGrave} playerZdo={(playerZdo != null ? "alive" : "gone")} " +
+                $"playerDowned={playerDowned} playerProg={(playerZdo != null ? playerView.ReviveProgress : 0f):F2} " +
+                $"instance={(instance != null ? "yes" : "no")}");
+        }
+        foreach (var ghost in GhostMarkers()) {
+            var nv = ghost.GetComponent<ZNetView>();
+            var zdoRef = nv != null ? nv.GetZDO() : null;
+            Log($"E2E-LEAK[{context}] GHOST instance at {ghost.transform.position}: " +
+                $"zdoRef={(zdoRef != null ? zdoRef.m_uid.ToString() : "null")} " +
+                $"registered={(zdoRef != null && ZDOMan.instance.GetZDO(zdoRef.m_uid) != null ? "different-object" : "none")}");
+        }
+    }
+
+    /// <summary>Leak verdict after one cycle: wait out transients, then count.</summary>
+    private int m_loopLeaks;
+    private IEnumerator LeakCheck(string context) {
+        float w = 0f;
+        while (w < LeakGraceSeconds && (MarkerZdos().Count > 0 || GhostMarkers().Count > 0)) {
+            w += Time.unscaledDeltaTime;
+            yield return null;
+        }
+        int zdos = MarkerZdos().Count, ghosts = GhostMarkers().Count;
+        if (zdos > 0 || ghosts > 0) {
+            m_loopLeaks++;
+            DumpLeaks(context);
+        }
+        Log($"E2E loop [{context}]: zdosLeft={zdos} ghosts={ghosts} leaksSoFar={m_loopLeaks}");
+    }
+
+    /// <summary>Victim: go down over and over; the other side revives each time.</summary>
+    private IEnumerator RunLoopVictim(Player me) {
+        if (E2EConfig.IsExpireLoop) {
+            yield return StartCoroutine(RunLoopVictimExpire());
+            yield break;
+        }
+
+        int cycles = E2EConfig.LoopCycles;
+        int revives = 0;
+        for (int cycle = 1; cycle <= cycles; cycle++) {
+            me.SetHealth(me.GetMaxHealth());
+            yield return new WaitForSecondsRealtime(1.2f);
+
+            Log($"E2E loop {cycle}: downing self");
+            me.SetHealth(0f);
+            float w = 0f;
+            while (w < 5f && !me.IsDowned()) { w += Time.unscaledDeltaTime; yield return null; }
+            if (!me.IsDowned()) { Record("reviveloop_victim", false, $"cycle {cycle}: could not down"); yield break; }
+
+            w = 0f;
+            while (w < 40f && me.IsDowned() && !me.IsDead()) { w += Time.unscaledDeltaTime; yield return null; }
+            if (me.IsDowned() || me.IsDead()) {
+                Record("reviveloop_victim", false, $"cycle {cycle}: not revived (dead={me.IsDead()})");
+                yield break;
+            }
+            revives++;
+            yield return StartCoroutine(LeakCheck($"victim cycle {cycle}"));
+        }
+        Record("reviveloop_victim", revives == cycles && m_loopLeaks == 0,
+            $"revives={revives}/{cycles} leakCycles={m_loopLeaks}");
+        yield return new WaitForSecondsRealtime(8f); // let the reviver finish its checks
+    }
+
+    /// <summary>
+    /// Expire-mode victim: die mid-channel, every cycle. As soon as the
+    /// reviver's replicated progress shows an active channel, force the window
+    /// to have expired -- CheckDeath then kills us WHILE the reviver's
+    /// interactable is still writing to the marker ZDO, overlapping its writes
+    /// with the marker-to-grave handoff (MarkReplaced / crumble).
+    /// </summary>
+    private IEnumerator RunLoopVictimExpire() {
+        int cycles = E2EConfig.LoopCycles;
+        int deaths = 0;
+        for (int cycle = 1; cycle <= cycles; cycle++) {
+            var me = Player.m_localPlayer; // fresh object after each respawn
+            if (me == null) { Record("reviveloop_victim", false, $"cycle {cycle}: no local player"); yield break; }
+            me.SetHealth(me.GetMaxHealth());
+            GiveTestItem(me); // loot -> the real grave replaces the marker
+            yield return new WaitForSecondsRealtime(1.2f);
+
+            Log($"E2E loop {cycle}: downing self (expire mode)");
+            me.SetHealth(0f);
+            float w = 0f;
+            while (w < 5f && !me.IsDowned()) { w += Time.unscaledDeltaTime; yield return null; }
+            if (!me.IsDowned()) { Record("reviveloop_victim", false, $"cycle {cycle}: could not down"); yield break; }
+
+            // Wait for the reviver's channel to be live (replicated progress).
+            w = 0f;
+            while (w < 30f && me.GetReviveProgress() < 0.15f && me.IsDowned()) { w += Time.unscaledDeltaTime; yield return null; }
+            if (!me.IsDowned()) { Record("reviveloop_victim", false, $"cycle {cycle}: revived before expiry could fire"); yield break; }
+
+            // Die mid-channel: force the window into the past.
+            var zdo = me.m_nview.GetZdo<DownedPlayerZdo>();
+            zdo.DownedTime = (float)ZNet.instance.GetTimeSeconds() - Plugin.ReviveWindow - 5f;
+            w = 0f;
+            while (w < 12f && !me.IsDead()) { me.SetHealth(0f); w += Time.unscaledDeltaTime; yield return null; }
+            if (!me.IsDead()) { Record("reviveloop_victim", false, $"cycle {cycle}: expiry did not kill"); yield break; }
+            deaths++;
+
+            yield return StartCoroutine(LeakCheck($"victim expire cycle {cycle}"));
+            yield return StartCoroutine(WaitForAlivePlayer()); // vanilla auto-respawn
+        }
+        Record("reviveloop_victim", deaths == cycles && m_loopLeaks == 0,
+            $"deaths={deaths}/{cycles} leakCycles={m_loopLeaks}");
+        yield return new WaitForSecondsRealtime(8f);
+    }
+
+    /// <summary>
+    /// Reviver: channel each down with REALISTIC input -- a mid-channel release
+    /// and re-grip (forces decay publishes and a fresh ownership claim), then
+    /// keep holding well past the moment the revive lands, the way a human
+    /// does. The scripted revive test releases the instant IsDowned flips,
+    /// which is exactly why it never reproduced the leak. Cycle count is driven
+    /// by the victim; we just revive whatever goes down and hunt leaks.
+    /// </summary>
+    private IEnumerator RunLoopReviver(Player me) {
+        if (E2EConfig.IsExpireLoop) {
+            yield return StartCoroutine(RunLoopReviverExpire(me));
+            yield break;
+        }
+
+        int revived = 0;
+        while (true) {
+            Player? downed = null;
+            float w = 0f;
+            while (w < 30f && downed == null) {
+                downed = FindDownedRemotePlayer(me);
+                w += Time.unscaledDeltaTime;
+                yield return null;
+            }
+            if (downed == null) break; // victim finished its cycles
+            yield return new WaitForSecondsRealtime(0.5f); // marker streams in
+
+            w = 0f;
+            float overshoot = 0f;
+            bool jittered = false;
+            while (w < 40f && overshoot < 2f) {
+                // One release+re-grip mid-channel: progress decays, then the
+                // re-grip claims the marker again.
+                if (!jittered && downed.GetReviveProgress() > 0.45f) {
+                    jittered = true;
+                    yield return new WaitForSecondsRealtime(0.65f);
+                    w += 0.65f;
+                    continue;
+                }
+                var interactable = FindInteractableViaHoverRay(downed, me)
+                    ?? UnityEngine.Object.FindObjectOfType<ReviveInteractable>();
+                interactable?.Interact(me, hold: true, alt: false);
+                if (!downed.IsDowned()) overshoot += Time.unscaledDeltaTime; // keep holding past the revive
+                w += Time.unscaledDeltaTime;
+                yield return null;
+            }
+            if (downed.IsDowned()) { Record("reviveloop_reviver", false, "revive did not land"); yield break; }
+            revived++;
+            yield return StartCoroutine(LeakCheck($"reviver after revive #{revived}"));
+        }
+        Record("reviveloop_reviver", revived > 0 && m_loopLeaks == 0,
+            $"revived={revived} leakCycles={m_loopLeaks}");
+    }
+
+    /// <summary>
+    /// Expire-mode reviver: channel the downed victim continuously and keep
+    /// gripping the key while it DIES mid-channel -- the interactable's decay
+    /// writes then overlap the dying client's marker-to-grave handoff.
+    /// </summary>
+    private IEnumerator RunLoopReviverExpire(Player me) {
+        int deaths = 0;
+        while (true) {
+            Player? downed = null;
+            float w = 0f;
+            while (w < 30f && downed == null) {
+                downed = FindDownedRemotePlayer(me);
+                w += Time.unscaledDeltaTime;
+                yield return null;
+            }
+            if (downed == null) break; // victim finished its cycles
+            yield return new WaitForSecondsRealtime(0.4f);
+
+            w = 0f;
+            float overshoot = 0f;
+            while (w < 40f && overshoot < 2.5f) {
+                var interactable = FindInteractableViaHoverRay(downed, me)
+                    ?? UnityEngine.Object.FindObjectOfType<ReviveInteractable>();
+                interactable?.Interact(me, hold: true, alt: false);
+                if (downed.IsDead() || !downed.IsDowned()) overshoot += Time.unscaledDeltaTime;
+                w += Time.unscaledDeltaTime;
+                yield return null;
+            }
+            if (!downed.IsDead()) { Record("reviveloop_reviver", false, "victim did not die mid-channel"); yield break; }
+            deaths++;
+            yield return StartCoroutine(LeakCheck($"reviver expire #{deaths}"));
+        }
+        Record("reviveloop_reviver", deaths > 0 && m_loopLeaks == 0,
+            $"deaths={deaths} leakCycles={m_loopLeaks}");
     }
 
     private IEnumerator ValidateMarker(Player downed) {
@@ -599,8 +878,8 @@ public class E2ERunner : MonoBehaviour {
             && DownedPlayerZdo.GraveReplacePosHash == "RevivalRevived_graveReplacePos".GetStableHashCode()
             && DownedPlayerZdo.MarkerHashPair.Key == "RevivalRevived_markerZDOID_u".GetStableHashCode()
             && DownedPlayerZdo.MarkerHashPair.Value == "RevivalRevived_markerZDOID_i".GetStableHashCode()
+            && DownedPlayerZdo.ReviveProgressHash == "RevivalRevived_reviveProgress".GetStableHashCode()
             && DownedMarker.View.IsDownedMarkerHash == "RevivalRevived_isDownedMarker".GetStableHashCode()
-            && DownedMarker.View.ReviveProgressHash == "RevivalRevived_reviveProgress".GetStableHashCode()
             && DownedMarker.View.OwnerPlayerIdHash == "RevivalRevived_ownerPlayerID".GetStableHashCode()
             && DownedMarker.View.OwnerNameHash == "ownerName".GetStableHashCode()
             && DownedMarker.View.OwnerNameHash == ZDOVars.s_ownerName
@@ -609,8 +888,7 @@ public class E2ERunner : MonoBehaviour {
             // RPC wire names are the network protocol -- RpcTyped must keep
             // emitting the established strings.
             && DownedRpcs.OnDownedName == "RevivalRevived_OnDowned"
-            && DownedRpcs.ChannelName == "RevivalRevived_Channel"
-            && DownedRpcs.DoReviveName == "RevivalRevived_DoRevive";
+            && DownedRpcs.ChannelName == "RevivalRevived_Channel";
         Record(T, ok, $"generatedHashesMatchGame={ok}");
         yield return null;
     }
@@ -862,6 +1140,7 @@ public class E2ERunner : MonoBehaviour {
         var player = Player.m_localPlayer;
         if (!player.IsDowned()) { Record(T, false, "precondition: not downed"); yield break; }
         var markerBefore = player.FindDownedMarker();
+        int crumblesBefore = DownedMarker.CrumbleEvents;
 
         player.ReviveFromDowned();
         yield return new WaitForSecondsRealtime(0.5f);
@@ -878,10 +1157,12 @@ public class E2ERunner : MonoBehaviour {
         bool notKinematic = player.m_body != null && !player.m_body.isKinematic;
         yield return new WaitForSecondsRealtime(0.5f);
         bool markerGone = markerBefore == null || !markerBefore;
+        // The marker must CRUMBLE away (grave despawn effect), not blink out.
+        bool crumbled = DownedMarker.CrumbleEvents > crumblesBefore;
 
-        Record(T, notDowned && revivableGone && healthy && canMove && visualBack && collider && notKinematic && markerGone,
+        Record(T, notDowned && revivableGone && healthy && canMove && visualBack && collider && notKinematic && markerGone && crumbled,
             $"notDowned={notDowned} revivableGone={revivableGone} hp={player.GetHealth():F0} canMove={canMove} " +
-            $"visualBack={visualBack} collider={collider} notKinematic={notKinematic} markerGone={markerGone}");
+            $"visualBack={visualBack} collider={collider} notKinematic={notKinematic} markerGone={markerGone} crumbled={crumbled}");
     }
 
     private IEnumerator Test_ExpiryKills() {

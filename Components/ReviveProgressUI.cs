@@ -89,6 +89,10 @@ public class ReviveProgressUI : MonoBehaviour {
             progress = Mathf.Max(progress, p.GetReviveProgress());
         }
 
+        // Never over-full: whatever replicates in, the circle shows at most a
+        // complete ring.
+        progress = Mathf.Clamp01(progress);
+
         bool show = progress > 0.01f;
         if (m_root != null && m_root.activeSelf != show) m_root.SetActive(show);
         if (show && m_fill != null) m_fill.fillAmount = progress;

@@ -23,4 +23,12 @@ public partial struct DownedPlayerZdo {
 
     /// <summary>Cross-link to this player's green marker.</summary>
     [ZdoField(Name = "markerZDOID")] public partial ZDOID Marker { get; set; }
+
+    /// <summary>
+    /// Revive channel progress 0-1. OWNER-authoritative like every other field
+    /// here: revivers only send channel pings, this player's owner accumulates
+    /// the hold, publishes it, and revives itself at 1. One writer, one clock,
+    /// no completion RPC, no marker-ZDO ownership churn.
+    /// </summary>
+    [ZdoField(Name = "reviveProgress")] public partial float ReviveProgress { get; set; }
 }

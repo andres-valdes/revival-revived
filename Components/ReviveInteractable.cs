@@ -5,25 +5,24 @@ using ZdoTyped;
 namespace RevivalRevived.Components;
 
 /// <summary>
-/// Added to the downed marker. Implements Hoverable/Interactable and owns the
-/// revive channel <em>peer-authoritatively</em>: the reviving client accumulates
-/// the hold timer locally (no owner round-trip, so the progress circle is
-/// lag-free -- Valheim's trust model doesn't need host arbitration), publishes
-/// progress onto the marker ZDO (claiming ownership) so the downed player and
-/// bystanders see it too, pings the owner to pause the bleed-out window, and
-/// sends <see cref="DownedRpcs.DoRevive"/> when the hold completes.
+/// Added to the downed marker. Implements Hoverable/Interactable and forwards
+/// the reviver's intent to the downed player's owner.
+///
+/// The revive is <em>owner-authoritative</em>: while a reviver holds (or presses
+/// in press mode) the interact key on the marker, we send a <see cref="DownedRpcs.Channel"/>
+/// ping routed to the downed player's owner. The owner accumulates the progress
+/// on its own ZDO, publishes it (so every client's UI sees it replicate in), and
+/// revives itself at completion. This component never writes any ZDO -- so it
+/// cannot claim the marker, fight its owner, or leave stale progress behind.
+/// The cost is that the reviver's progress circle lags by one round-trip, which
+/// is correct.
 /// </summary>
 public class ReviveInteractable : MonoBehaviour, Hoverable, Interactable {
     private ZNetView? m_nview;
-    private float m_holdTimer;
-    private float m_lastInteractTime = -999f;
     private float m_lastPingTime = -999f;
-    private bool m_reviveSent;
 
-    /// <summary>Player.Interact re-fires held interactions every 0.2s; anything under this counts as "still holding".</summary>
-    private const float HoldGapTimeout = 0.4f;
-    /// <summary>Cadence of pause-the-window pings to the downed player's owner.</summary>
-    private const float PingInterval = 0.25f;
+    /// <summary>Cadence of channel pings to the downed player's owner (bounds RPC rate regardless of caller frequency).</summary>
+    private const float PingInterval = 0.2f;
 
     private void Awake() {
         m_nview = GetComponentInParent<ZNetView>();
@@ -41,57 +40,14 @@ public class ReviveInteractable : MonoBehaviour, Hoverable, Interactable {
         return player != null && player.IsDowned() ? player : null;
     }
 
-    private void Update() {
-        if (m_nview == null || !m_nview.IsValid()) return;
-
-        bool channeling = Time.time - m_lastInteractTime < HoldGapTimeout;
-        var player = channeling || m_holdTimer > 0f ? FindDownedPlayer() : null;
-
-        if (channeling && player != null) {
-            if (Plugin.RevivePressMode) {
-                SendRevive(player);
-                return;
-            }
-
-            m_holdTimer += Time.deltaTime;
-
-            // Keep the owner's bleed-out window paused while we channel.
-            if (Time.time - m_lastPingTime > PingInterval) {
-                m_lastPingTime = Time.time;
-                player.m_nview.GetRpcs<DownedRpcs>().Channel();
-            }
-
-            if (m_holdTimer >= Plugin.ReviveDuration) {
-                SendRevive(player);
-                return;
-            }
-        } else if (m_holdTimer > 0f) {
-            m_holdTimer = Mathf.Max(0f, m_holdTimer - Time.deltaTime * 2f);
-        } else {
-            return; // idle: nothing to publish
-        }
-
-        PublishProgress(Mathf.Clamp01(m_holdTimer / Plugin.ReviveDuration));
-    }
-
     /// <summary>
-    /// Write our locally-authoritative progress to the marker ZDO so every other
-    /// client's UI sees it (we claim the marker -- it's just a prop).
+    /// Tell the downed player's owner we are channeling (throttled). The owner
+    /// does everything else.
     /// </summary>
-    private void PublishProgress(float progress) {
-        if (m_nview == null || !m_nview.IsValid()) return;
-        if (!m_nview.IsOwner()) m_nview.ClaimOwnership();
-        var view = m_nview.GetZdo<DownedMarker.View>();
-        view.ReviveProgress = progress;
-    }
-
-    private void SendRevive(Player player) {
-        if (m_reviveSent) return;
-        m_reviveSent = true;
-        m_holdTimer = 0f;
-        PublishProgress(0f);
-        // Routed to the downed player's owner, which executes the revive.
-        player.m_nview.GetRpcs<DownedRpcs>().DoRevive();
+    private void SendChannelPing(Player downed) {
+        if (Time.time - m_lastPingTime < PingInterval) return;
+        m_lastPingTime = Time.time;
+        downed.m_nview.GetRpcs<DownedRpcs>().Channel();
     }
 
     /// <summary>
@@ -142,12 +98,15 @@ public class ReviveInteractable : MonoBehaviour, Hoverable, Interactable {
         var player = FindDownedPlayer();
         if (player == null || reviver == player) return false;
 
-        m_lastInteractTime = Time.time; // the local Update drives the channel
+        SendChannelPing(player);
         return true;
     }
 
-    /// <summary>Test hook: equivalent to the local player holding interact this frame.</summary>
-    public void SimulateHold() => m_lastInteractTime = Time.time;
+    /// <summary>Test hook: one frame of channel input from a would-be reviver.</summary>
+    public void SimulateHold() {
+        var player = FindDownedPlayer();
+        if (player != null) SendChannelPing(player);
+    }
 
     public bool UseItem(Humanoid user, ItemDrop.ItemData item) {
         return false;

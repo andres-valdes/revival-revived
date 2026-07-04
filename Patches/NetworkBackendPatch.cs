@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using HarmonyLib;
 
 namespace RevivalRevived.Patches;
@@ -83,5 +84,34 @@ static class ZNetSendPeerInfoSocketPatch {
         rpc.Invoke("PeerInfo", pkg);
         E2E.E2ELog.Write("E2E[client]: sent CustomSocket PeerInfo (no steam ticket)");
         return false;
+    }
+}
+
+/// <summary>
+/// E2E-only: artificial one-way latency on the CustomSocket backend
+/// (RR_E2E_LATENCY milliseconds). Every received packet is held for the
+/// configured delay before the game sees it, so two local processes behave
+/// like clients on a real internet server -- races that need in-flight time
+/// (destroy vs. late writes) become reproducible. Applied on both sides, the
+/// effective RTT is 2x the configured value.
+/// </summary>
+[HarmonyPatch(typeof(ZSocket2), "Recv")]
+static class SocketLatencyPatch {
+    private static readonly Dictionary<ZSocket2, Queue<(DateTime due, ZPackage pkg)>> s_delayed = new();
+
+    static void Postfix(ZSocket2 __instance, ref ZPackage? __result) {
+        int ms = E2E.E2EConfig.LatencyMs;
+        if (ms <= 0 || !E2E.E2EConfig.MultiplayerMode) return;
+
+        if (!s_delayed.TryGetValue(__instance, out var queue)) {
+            s_delayed[__instance] = queue = new Queue<(DateTime, ZPackage)>();
+        }
+        if (__result != null) {
+            queue.Enqueue((DateTime.UtcNow.AddMilliseconds(ms), __result));
+        }
+        // Release packets strictly in order, each only once its delay elapsed.
+        __result = queue.Count > 0 && queue.Peek().due <= DateTime.UtcNow
+            ? queue.Dequeue().pkg
+            : null;
     }
 }

@@ -4,32 +4,33 @@ using ZdoTyped;
 namespace RevivalRevived.Components;
 
 /// <summary>
-/// Present on a downed Player on <em>every</em> client, and the single place
-/// that manages the downed player's local presentation: while the replicated
-/// <c>s_downed</c> flag is set it hides the visual, disables the collider (so
-/// the invisible corpse neither blocks movement nor eats the hover raycast) and
-/// freezes the owner's body; when the flag clears -- revived or expired,
-/// observed via ZDO on ANY client, no RPC ordering races -- it restores what it
-/// changed and destroys itself.
+/// Present on a downed Player on <em>every</em> client. Two jobs:
+///
+///  - Presentation (all clients): while the replicated downed flag is set, hide
+///    the visual and disable the collider (so the invisible corpse neither
+///    blocks movement nor eats the hover raycast) and freeze the owner's body.
+///    When the flag clears -- revived or expired, observed via ZDO on ANY
+///    client -- restore what it changed and destroy itself. No RPC ordering.
+///
+///  - Revive channel (owner only): the revive is owner-authoritative. Revivers
+///    only send <see cref="DownedRpcs.Channel"/> pings; here, on the downed
+///    player's own owner, we accumulate the hold, pause the bleed-out window,
+///    publish progress onto our OWN player ZDO (single writer -> nothing to
+///    race), and revive ourselves at completion.
 ///
 /// Lifecycle is ZDO-driven: a slim LateUpdate patch attaches this component to
 /// any player whose ZDO says downed; teardown is entirely local.
-///
-/// Authority split:
-///   - The revive *timer* is peer-authoritative: the reviver's
-///     <see cref="ReviveInteractable"/> accumulates the hold locally and sends
-///     <see cref="DownedRpcs.DoRevive"/> when complete.
-///   - The owner only enforces the bleed-out window (expiry -> death) and
-///     pauses it while channel pings (<see cref="DownedRpcs.Channel"/>)
-///     are arriving.
 /// </summary>
 public class Revivable : MonoBehaviour {
     private Player? m_player;
     private ZNetView? m_nview;
     private float m_lastChannelTime = -999f;
+    private long m_lastChannelSender;
+    /// <summary>Accumulated channel time in seconds (owner only).</summary>
+    private float m_progress;
 
-    /// <summary>Max gap between channel pings before the window resumes draining.</summary>
-    private const float ChannelPingTimeout = 0.7f;
+    /// <summary>Max gap between channel pings before the window resumes draining and progress decays.</summary>
+    private const float ChannelPingTimeout = 0.5f;
 
     public string PlayerName => m_player != null ? m_player.GetPlayerName() : "Viking";
     public float RemainingTime => m_player != null ? m_player.GetDownedRemainingTime() : 0f;
@@ -58,7 +59,7 @@ public class Revivable : MonoBehaviour {
             m_player.m_collider.enabled = false;
         }
 
-        // --- Owner-only: window enforcement ---------------------------------
+        // --- Owner-only: window enforcement + revive channel ----------------
         if (!m_nview.IsOwner()) return;
 
         m_player.m_body.isKinematic = true;
@@ -70,10 +71,41 @@ public class Revivable : MonoBehaviour {
             return;
         }
 
-        // Pause the bleed-out window while a reviver is actively channeling.
-        if (Time.time - m_lastChannelTime < ChannelPingTimeout) {
-            PauseWindowClock(Time.deltaTime);
+        UpdateReviveChannel();
+    }
+
+    /// <summary>
+    /// Owner-authoritative revive: accumulate progress while channel pings are
+    /// arriving (pausing the bleed-out window meanwhile), publish it on our own
+    /// ZDO, and revive at completion. Decay back toward zero when no one is
+    /// channeling.
+    /// </summary>
+    private void UpdateReviveChannel() {
+        var zdo = m_nview!.GetZdo<DownedPlayerZdo>();
+        bool channeling = Time.time - m_lastChannelTime < ChannelPingTimeout;
+
+        if (channeling) {
+            // A press-mode revive completes on the first ping.
+            if (Plugin.RevivePressMode) {
+                zdo.ReviveProgress = 1f;
+                m_player!.ReviveFromDowned(m_lastChannelSender);
+                return;
+            }
+
+            PauseWindowClock(zdo, Time.deltaTime);
+            m_progress += Time.deltaTime;
+            if (m_progress >= Plugin.ReviveDuration) {
+                zdo.ReviveProgress = 1f;
+                m_player!.ReviveFromDowned(m_lastChannelSender);
+                return;
+            }
+        } else if (m_progress > 0f) {
+            m_progress = Mathf.Max(0f, m_progress - Time.deltaTime * 2f);
+        } else {
+            return; // idle: nothing to publish
         }
+
+        zdo.ReviveProgress = Mathf.Clamp01(m_progress / Plugin.ReviveDuration);
     }
 
     private void Restore() {
@@ -85,18 +117,12 @@ public class Revivable : MonoBehaviour {
         }
     }
 
-    /// <summary>
-    /// Shift the downed clock forward by dt -- on OUR OWN player ZDO only. The
-    /// marker ZDO is written exclusively by the channeling reviver (progress);
-    /// writing the clock there too made two peers fight over the marker's data
-    /// revision and clobber each other's values. The marker's gradient reads the
-    /// player clock instead.
-    /// </summary>
-    private void PauseWindowClock(float dt) {
-        var zdo = m_nview!.GetZdo<DownedPlayerZdo>();
-        zdo.DownedTime += dt;
-    }
+    /// <summary>Shift the downed clock forward by dt so the window doesn't drain while channeling.</summary>
+    private static void PauseWindowClock(DownedPlayerZdo zdo, float dt) => zdo.DownedTime += dt;
 
-    /// <summary>A reviver is holding the channel (routed ping from any client).</summary>
-    public void ChannelPing() => m_lastChannelTime = Time.time;
+    /// <summary>A reviver is channeling (routed ping). Records who, for the revive message.</summary>
+    public void ChannelPing(long sender) {
+        m_lastChannelTime = Time.time;
+        m_lastChannelSender = sender;
+    }
 }

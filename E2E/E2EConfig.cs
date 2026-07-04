@@ -19,11 +19,32 @@ public static class E2EConfig {
     public static bool IsHost => Role == "host";
     public static bool IsClient => Role == "client";
 
-    /// <summary>Multiplayer scenario: "revive" (default), "rejoin", or "vanish".</summary>
+    /// <summary>Multiplayer scenario: "revive" (default), "rejoin", "vanish", or "reviveloop".</summary>
     public static string Scenario => (Environment.GetEnvironmentVariable("RR_E2E_SCENARIO") ?? "revive").ToLowerInvariant();
     public static bool IsRejoinScenario => Scenario == "rejoin";
     /// <summary>Client downs itself and logs out while the HOST is mid-channel reviving it.</summary>
     public static bool IsVanishScenario => Scenario == "vanish";
+    /// <summary>Stress: many down/revive cycles with realistic held input, watching for leaked marker ZDOs.</summary>
+    public static bool IsReviveLoopScenario => Scenario == "reviveloop";
+
+    /// <summary>Which role goes down in the revive loop ("host" or "client"); the other revives.</summary>
+    public static string LoopDownRole => (Environment.GetEnvironmentVariable("RR_E2E_LOOP_DOWN") ?? "host").ToLowerInvariant();
+
+    /// <summary>Down/revive cycles in the revive loop.</summary>
+    public static int LoopCycles {
+        get {
+            var s = Environment.GetEnvironmentVariable("RR_E2E_LOOP_CYCLES");
+            return int.TryParse(s, out var n) && n > 0 ? n : 15;
+        }
+    }
+
+    /// <summary>
+    /// Revive-loop mode: "revive" (default; the channel completes) or "expire"
+    /// (the victim dies mid-channel, overlapping the reviver's writes with the
+    /// marker-to-grave handoff).
+    /// </summary>
+    public static string LoopMode => (Environment.GetEnvironmentVariable("RR_E2E_LOOP_MODE") ?? "revive").ToLowerInvariant();
+    public static bool IsExpireLoop => LoopMode == "expire";
 
     /// <summary>
     /// Manual play mode: use the harness only to auto-host/auto-join over the
@@ -44,4 +65,12 @@ public static class E2EConfig {
 
     public static string ServerHost =>
         Environment.GetEnvironmentVariable("RR_E2E_HOST") ?? "127.0.0.1";
+
+    /// <summary>Artificial one-way latency (ms) injected into the CustomSocket backend.</summary>
+    public static int LatencyMs {
+        get {
+            var s = Environment.GetEnvironmentVariable("RR_E2E_LATENCY");
+            return int.TryParse(s, out var ms) && ms > 0 ? ms : 0;
+        }
+    }
 }

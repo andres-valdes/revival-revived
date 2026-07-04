@@ -21,17 +21,15 @@ namespace RevivalRevived.Components;
 /// </summary>
 public partial class DownedMarker : MonoBehaviour {
     /// <summary>
-    /// Typed view over the marker's ZDO. Written by its single writer -- the
-    /// channeling reviver (progress) -- plus the immutable identity fields set
-    /// once at spawn. Key names preserve the established wire format.
+    /// Typed view over the marker's ZDO: immutable identity fields set once at
+    /// spawn by the downed player's owner (who is also the marker's owner),
+    /// plus the replace flag it sets at death. Nobody else ever writes here --
+    /// revive progress is owner-authoritative on the PLAYER's ZDO.
     /// </summary>
     [ZdoTyped.ZdoSchema("RevivalRevived")]
     public partial struct View {
         /// <summary>Distinguishes the revive marker from a real loot grave.</summary>
         [ZdoTyped.ZdoField(Name = "isDownedMarker")] public partial bool IsDownedMarker { get; set; }
-
-        /// <summary>Peer-authoritative channel progress 0-1, written by the reviving client.</summary>
-        [ZdoTyped.ZdoField(Name = "reviveProgress")] public partial float ReviveProgress { get; set; }
 
         /// <summary>Stable PlayerID of the downed player (survives logout, unlike the character ZDOID).</summary>
         [ZdoTyped.ZdoField(Name = "ownerPlayerID")] public partial long OwnerPlayerId { get; set; }
@@ -166,11 +164,14 @@ public partial class DownedMarker : MonoBehaviour {
     /// <summary>Effect objects created by the last marker crumble (test hook).</summary>
     public static int LastCrumbleEffectCount { get; private set; }
 
+    /// <summary>Total crumbles this session (test hook; use deltas across an action).</summary>
+    public static int CrumbleEvents { get; private set; }
+
     /// <summary>
-    /// No grave replaces this marker (the player died with an empty inventory,
-    /// so vanilla spawns no tombstone): despawn it the way an emptied grave
-    /// does -- play the tombstone's own crumble effect (a networked vfx, so it
-    /// covers the disappearance on every client) and destroy it.
+    /// Despawn the marker the way an emptied grave does: play the tombstone's
+    /// own crumble effect (a networked vfx, so it covers the disappearance on
+    /// every client) and destroy it. Used on revive, and on death when no grave
+    /// spawns to take the marker's place.
     /// </summary>
     public static void Crumble(GameObject? marker) {
         if (marker == null) return;
@@ -178,6 +179,7 @@ public partial class DownedMarker : MonoBehaviour {
         if (effect != null) {
             var created = effect.Create(marker.transform.position, marker.transform.rotation);
             LastCrumbleEffectCount = created?.Length ?? 0;
+            CrumbleEvents++;
         }
         DestroyMarker(marker);
     }
@@ -197,19 +199,22 @@ public partial class DownedMarker : MonoBehaviour {
         return s_crumbleEffect;
     }
 
-    /// <summary>Destroy the marker linked from a player's typed view and clear the link.</summary>
-    public static void DestroyLinkedMarker(ref DownedPlayerZdo playerZdo) {
+    /// <summary>
+    /// Crumble away the marker linked from a player's typed view and clear the
+    /// link: plays the grave despawn effect, then destroys. Used on revive --
+    /// the marker should visibly crumble, not blink out.
+    /// </summary>
+    public static void CrumbleLinkedMarker(ref DownedPlayerZdo playerZdo) {
         var markerId = playerZdo.Marker;
         if (markerId == ZDOID.None) return;
-
         playerZdo.Marker = ZDOID.None;
-        DestroyMarker(ZNetScene.instance.FindInstance(markerId));
+        Crumble(ZNetScene.instance.FindInstance(markerId));
     }
 
     /// <summary>
-    /// Destroy a marker tombstone, claiming ownership first: after a disconnect
-    /// (or a reviver's progress claim) the marker may be owned elsewhere, and a
-    /// non-owner Destroy silently fails to replicate.
+    /// Destroy a marker tombstone, claiming ownership first: an orphaned marker
+    /// (left by a disconnect) is owned by the server, and a non-owner Destroy
+    /// silently fails to replicate.
     /// </summary>
     public static void DestroyMarker(GameObject? go) {
         if (go == null) return;
@@ -444,11 +449,8 @@ public partial class DownedMarker : MonoBehaviour {
         }
 
         // Blend from green back to the grave's own red as the window elapses.
-        //
         // The clock is read from the LINKED PLAYER's ZDO (its owner maintains it,
-        // including the pause-while-channeling shift). The marker ZDO must have a
-        // single writer -- the channeling reviver publishing progress -- so the
-        // window clock cannot live here without ZDO revision fights.
+        // including the pause-while-channeling shift).
         var playerZdoId = view.Player;
         var playerZdo = playerZdoId != ZDOID.None ? ZDOMan.instance.GetZDO(playerZdoId) : null;
         var downedTime = playerZdo != null

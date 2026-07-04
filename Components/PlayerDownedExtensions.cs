@@ -34,14 +34,13 @@ public static class PlayerDownedExtensions {
     }
 
     /// <summary>
-    /// Revive channel progress 0-1, read from the linked marker's ZDO (written
-    /// peer-authoritatively by whichever client is channeling).
+    /// Revive channel progress 0-1, read from the player's own ZDO (written
+    /// owner-authoritatively by the downed player's <see cref="Revivable"/> as
+    /// revivers channel). Replicates to every client for the progress circle.
     /// </summary>
     public static float GetReviveProgress(this Player? player) {
-        var marker = player.FindDownedMarker();
-        if (marker == null) return 0f;
-        var nv = marker.GetComponent<ZNetView>();
-        return nv.TryGetZdo<DownedMarker.View>(out var view) ? view.ReviveProgress : 0f;
+        if (player == null || !player.m_nview.TryGetZdo<DownedPlayerZdo>(out var zdo)) return 0f;
+        return zdo.ReviveProgress;
     }
 
     /// <summary>The green marker tombstone linked to this player, on any client.</summary>
@@ -65,6 +64,7 @@ public static class PlayerDownedExtensions {
         var zdo = player.m_nview.GetZdo<DownedPlayerZdo>();
 
         zdo.GraveReplacePending = false; // stale replace must not leak in
+        zdo.ReviveProgress = 0f;         // fresh channel
 
         zdo.Downed = true;
         zdo.DownedTime = (float)ZNet.instance.GetTimeSeconds();
@@ -97,7 +97,8 @@ public static class PlayerDownedExtensions {
 
         player.SetHealth(Mathf.Max(player.GetMaxHealth() * Plugin.ReviveHealthFraction, 1f));
 
-        DownedMarker.DestroyLinkedMarker(ref zdo);
+        // The marker crumbles away like an emptied grave (not an instant blink).
+        DownedMarker.CrumbleLinkedMarker(ref zdo);
 
         player.Message(MessageHud.MessageType.Center, "You have been revived!");
         Plugin.Logger.LogInfo($"{player.GetPlayerName()} was revived by {ReviverName(reviverId)}");

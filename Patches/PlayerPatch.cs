@@ -19,16 +19,11 @@ static class PlayerAwakePatch {
             __instance.PlayDownedPoof();
         });
 
-        // Reviver -> owner: "still channeling" ping (pauses the bleed-out window).
+        // Reviver -> owner: "I am channeling a revive." The owner's Revivable
+        // accumulates progress and revives at completion (owner-authoritative).
         rpcs.RegisterChannel((long sender) => {
             if (!nview.IsOwner()) return;
-            __instance.GetComponent<Revivable>()?.ChannelPing();
-        });
-
-        // Reviver -> owner: peer-authoritative hold completed, execute the revive.
-        rpcs.RegisterDoRevive((long sender) => {
-            if (!nview.IsOwner() || !__instance.IsDowned()) return;
-            __instance.ReviveFromDowned(sender);
+            __instance.GetComponent<Revivable>()?.ChannelPing(sender);
         });
 
         // Late join / streamed-in-while-downed: the component reflects the
