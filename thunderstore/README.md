@@ -4,8 +4,8 @@ Allows you to revive your friends where they fell, within a bleed-out window, be
 
 ## USAGE
 
-- On lethal damage you are downed instead of killed: your body vanishes in a puff of smoke and a green revive marker with your name on it drops in at your point of death.
-- Your friends hold their "Use" key (E) on the marker to revive you. A progress circle shows the channel (4 seconds by default; there is a single-press mode in the config).
+- On lethal damage you are downed instead of killed, leaving a revive marker at your point of death.
+- Your friends hold their "Use" key (E) on the marker to revive you (4 seconds by default; there is a single-press mode in the config).
 - You stay revivable for the window (30 seconds by default); after that you die for real and your tombstone appears as usual.
 - Revived players come back at 25% health.
 

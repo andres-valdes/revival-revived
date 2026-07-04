@@ -2,7 +2,7 @@
   "name": "RevivalRevived",
   "version_number": "0.1.1",
   "website_url": "https://github.com/andres-valdes/revival-revived",
-  "description": "Downed instead of dead: lethal damage leaves a green revive marker teammates can channel before the bleed-out window turns it into your real grave. Configurable hold time, window and press-mode.",
+  "description": "Downed instead of dead: lethal damage leaves a revive marker teammates can revive you at before the window runs out and death becomes permanent. Configurable hold time, window and press-mode.",
   "dependencies": [
     "denikson-BepInExPack_Valheim-5.4.2202"
   ]
