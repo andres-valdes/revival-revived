@@ -884,11 +884,7 @@ public class E2ERunner : MonoBehaviour {
             && DownedMarker.View.OwnerNameHash == "ownerName".GetStableHashCode()
             && DownedMarker.View.OwnerNameHash == ZDOVars.s_ownerName
             && DownedMarker.View.PlayerHashPair.Key == "RevivalRevived_playerZDOID_u".GetStableHashCode()
-            && DownedMarker.View.PlayerHashPair.Value == "RevivalRevived_playerZDOID_i".GetStableHashCode()
-            // RPC wire names are the network protocol -- RpcTyped must keep
-            // emitting the established strings.
-            && DownedRpcs.OnDownedName == "RevivalRevived_OnDowned"
-            && DownedRpcs.ChannelName == "RevivalRevived_Channel";
+            && DownedMarker.View.PlayerHashPair.Value == "RevivalRevived_playerZDOID_i".GetStableHashCode();
         Record(T, ok, $"generatedHashesMatchGame={ok}");
         yield return null;
     }

@@ -1,4 +1,3 @@
-using RpcTyped;
 using UnityEngine;
 using ZdoTyped;
 
@@ -9,7 +8,7 @@ namespace RevivalRevived.Components;
 /// the reviver's intent to the downed player's owner.
 ///
 /// The revive is <em>owner-authoritative</em>: while a reviver holds (or presses
-/// in press mode) the interact key on the marker, we send a <see cref="DownedRpcs.Channel"/>
+/// in press mode) the interact key on the marker, we send a <see cref="DownedKeys.RpcChannel"/>
 /// ping routed to the downed player's owner. The owner accumulates the progress
 /// on its own ZDO, publishes it (so every client's UI sees it replicate in), and
 /// revives itself at completion. This component never writes any ZDO -- so it
@@ -47,7 +46,7 @@ public class ReviveInteractable : MonoBehaviour, Hoverable, Interactable {
     private void SendChannelPing(Player downed) {
         if (Time.time - m_lastPingTime < PingInterval) return;
         m_lastPingTime = Time.time;
-        downed.m_nview.GetRpcs<DownedRpcs>().Channel();
+        downed.m_nview.InvokeRPC(DownedKeys.RpcChannel);
     }
 
     /// <summary>

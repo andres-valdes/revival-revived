@@ -163,44 +163,35 @@ and `DownedMarker.View` (nested → gets `NetView`) are the in-repo examples.
 
 ## Step 4: RPCs for Multiplayer Communication
 
-RPCs are declared as a typed set. The **RpcTyped** generator (sibling repo
-`../rpc-typed`) emits the wire-name constants, the routed invokers, and the
-register/unregister companions.
+Register handlers on the `ZNetView` and route calls to the owner, a peer, or
+everyone. Name the RPCs with a mod prefix (kept in one place as constants) to
+avoid collisions.
 
 ```csharp
-[RpcSet("MyMod")]                          // names become "MyMod_<method>"
-public partial struct Rpcs {
-    [Rpc] public partial void DoThing(int amount, string reason);
+static class Rpcs {
+    public const string DoThing = "MyMod_DoThing";
+}
+
+void Awake() {
+    var nview = GetComponent<ZNetView>();
+    nview.Register<int, string>(Rpcs.DoThing, RPC_DoThing);
+}
+
+void RPC_DoThing(long sender, int amount, string reason) {
+    // runs on the receiving peer; sender is the caller's peer id
+}
+
+void Send(ZNetView nview) {
+    nview.InvokeRPC(Rpcs.DoThing, 42, "reason");                    // to the ZDO owner
+    nview.InvokeRPC(ZNetView.Everybody, Rpcs.DoThing, 42, "all");   // every peer + locally
+    nview.InvokeRPC(peerId, Rpcs.DoThing, 42, "targeted");          // a specific peer
 }
 ```
 
-Bind the set to a `ZNetView` and use it:
-
-```csharp
-var rpcs = m_nview.GetRpcs<Rpcs>();
-rpcs.RegisterDoThing((long sender, int amount, string reason) => {
-    // runs on the receiving peer; sender is the caller's peer id
-});
-rpcs.DoThing(42, "reason");                 // routed to the ZDO owner
-rpcs.DoThingToAll(42, "broadcast");         // every peer + locally
-rpcs.DoThingTo(peerId, 42, "targeted");     // a specific peer
-```
-
-Nest the set in a component for a typed `Rpc` accessor (type inferred, no
-`GetRpcs<>`): `Rpc.DoThingToAll(...)`, `Rpc.RegisterDoThing(...)`.
-
-When a component owns its RPCs, skip the set entirely: mark the **handler**
-methods with `[Rpc]` (first parameter is the sender peer id) and the generator
-writes a self-registering `Awake()` — which registers every handler and calls
-your optional `partial void OnAwake()` — plus the typed senders
-(`XToAll`/`XTo`/owner-routed `X`). No registration is written; do not declare
-your own `Awake` (put init in `OnAwake`). See `../rpc-typed/README.md`.
-
-Parameter types are checked at compile time against what `ZRpc` serializes:
-`int`, `uint`, `long`, `float`, `double`, `bool`, `string`, `ZPackage`,
-`Vector3`, `Quaternion`, `ZDOID`, `HitData` — up to three per RPC. Misuse is a
-compile error (`RPC001`–`RPC009`). RevivalRevived's `DownedRpcs` (registered
-on Player) is the in-repo example.
+`ZNetView.Register`/the RPC arguments handle up to three parameters of the
+types `ZRpc` serializes: `int`, `uint`, `long`, `float`, `double`, `bool`,
+`string`, `ZPackage`, `Vector3`, `Quaternion`, `ZDOID`, `HitData`.
+RevivalRevived's `DownedKeys` holds its RPC name constants.
 
 ## Step 5: Handle ZNetView Lifecycle in Your Components
 
@@ -209,14 +200,14 @@ public partial class MyCustomBehaviour : MonoBehaviour {
     [ZdoSchema("MyMod")]
     public partial struct State { [ZdoField] public partial int Level { get; set; } }
 
-    [RpcSet("MyMod")]
-    public partial struct Rpcs { [Rpc] public partial void SetLevel(int level); }
+    private ZNetView m_nview = null!;
 
     void Awake() {
+        m_nview = GetComponent<ZNetView>();
         // Register handlers once the object exists. Guard: the ZDO may not be
         // valid yet during loading.
         if (!NetView.IsValid) return;
-        Rpc.RegisterSetLevel((long sender, int level) => {
+        m_nview.Register<int>("MyMod_SetLevel", (long sender, int level) => {
             if (!NetView.IsOwner) return;
             var s = NetView.Zdo; s.Level = level;
         });
@@ -252,13 +243,12 @@ static class ZNetScene_Awake_Patch {
 }
 ```
 
-## Generators
+## Generator
 
-Typed ZDO schemas and RPC sets come from two sibling repos, referenced as
-analyzers: `../zdo-typed` (https://github.com/andres-valdes/zdo-typed) and
-`../rpc-typed`. Their `README.md` files are the full reference for the
-attributes (`[ZdoSchema]`/`[ZdoField]`, `[RpcSet]`/`[Rpc]`), the `NetView` and
-`Rpc` component accessors, and the diagnostics.
+Typed ZDO schemas come from the sibling repo `../zdo-typed`
+(https://github.com/andres-valdes/zdo-typed), referenced as an analyzer. Its
+`README.md` is the full reference for the attributes (`[ZdoSchema]` /
+`[ZdoField]`), the `NetView` component accessor, and the diagnostics.
 
 ## Common Pitfalls
 

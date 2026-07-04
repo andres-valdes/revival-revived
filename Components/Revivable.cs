@@ -13,7 +13,7 @@ namespace RevivalRevived.Components;
 ///    client -- restore what it changed and destroy itself. No RPC ordering.
 ///
 ///  - Revive channel (owner only): the revive is owner-authoritative. Revivers
-///    only send <see cref="DownedRpcs.Channel"/> pings; here, on the downed
+///    only send <see cref="DownedKeys.RpcChannel"/> pings; here, on the downed
 ///    player's own owner, we accumulate the hold, pause the bleed-out window,
 ///    publish progress onto our OWN player ZDO (single writer -> nothing to
 ///    race), and revive ourselves at completion.

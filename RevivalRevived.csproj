@@ -40,12 +40,6 @@
                       OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
-  <!-- RpcTyped source generator: strongly-typed ZNetView RPCs -->
-  <ItemGroup>
-    <ProjectReference Include="../rpc-typed/src/RpcTyped.Generator/RpcTyped.Generator.csproj"
-                      OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
-  </ItemGroup>
-
   <!-- BepInEx core assemblies from local install -->
   <ItemGroup>
     <Reference Include="BepInEx">
