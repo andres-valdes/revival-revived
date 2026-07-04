@@ -1,3 +1,4 @@
+using RpcTyped;
 using UnityEngine;
 using ZdoTyped;
 
@@ -10,7 +11,7 @@ namespace RevivalRevived.Components;
 /// lag-free -- Valheim's trust model doesn't need host arbitration), publishes
 /// progress onto the marker ZDO (claiming ownership) so the downed player and
 /// bystanders see it too, pings the owner to pause the bleed-out window, and
-/// sends <see cref="DownedKeys.RpcDoRevive"/> when the hold completes.
+/// sends <see cref="DownedRpcs.DoRevive"/> when the hold completes.
 /// </summary>
 public class ReviveInteractable : MonoBehaviour, Hoverable, Interactable {
     private ZNetView? m_nview;
@@ -57,7 +58,7 @@ public class ReviveInteractable : MonoBehaviour, Hoverable, Interactable {
             // Keep the owner's bleed-out window paused while we channel.
             if (Time.time - m_lastPingTime > PingInterval) {
                 m_lastPingTime = Time.time;
-                player.m_nview.InvokeRPC(DownedKeys.RpcChannel);
+                player.m_nview.GetRpcs<DownedRpcs>().Channel();
             }
 
             if (m_holdTimer >= Plugin.ReviveDuration) {
@@ -90,7 +91,7 @@ public class ReviveInteractable : MonoBehaviour, Hoverable, Interactable {
         m_holdTimer = 0f;
         PublishProgress(0f);
         // Routed to the downed player's owner, which executes the revive.
-        player.m_nview.InvokeRPC(DownedKeys.RpcDoRevive);
+        player.m_nview.GetRpcs<DownedRpcs>().DoRevive();
     }
 
     /// <summary>

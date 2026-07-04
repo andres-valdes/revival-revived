@@ -1,5 +1,6 @@
 using HarmonyLib;
 using RevivalRevived.Components;
+using RpcTyped;
 using UnityEngine;
 
 namespace RevivalRevived.Patches;
@@ -11,20 +12,21 @@ namespace RevivalRevived.Patches;
 static class PlayerAwakePatch {
     static void Postfix(Player __instance) {
         var nview = __instance.m_nview;
+        var rpcs = nview.GetRpcs<DownedRpcs>();
 
         // Transient poof effect on down; all state is ZDO-driven via Revivable.
-        nview.Register(DownedKeys.RpcOnDowned, (long sender) => {
+        rpcs.RegisterOnDowned((long sender) => {
             __instance.PlayDownedPoof();
         });
 
         // Reviver -> owner: "still channeling" ping (pauses the bleed-out window).
-        nview.Register(DownedKeys.RpcChannel, (long sender) => {
+        rpcs.RegisterChannel((long sender) => {
             if (!nview.IsOwner()) return;
             __instance.GetComponent<Revivable>()?.ChannelPing();
         });
 
         // Reviver -> owner: peer-authoritative hold completed, execute the revive.
-        nview.Register(DownedKeys.RpcDoRevive, (long sender) => {
+        rpcs.RegisterDoRevive((long sender) => {
             if (!nview.IsOwner() || !__instance.IsDowned()) return;
             __instance.ReviveFromDowned(sender);
         });

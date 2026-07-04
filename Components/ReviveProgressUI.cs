@@ -8,7 +8,7 @@ namespace RevivalRevived.Components;
 ///
 /// ZDO-driven like the rest of the mod: every frame it scans the loaded players
 /// for one that is downed with a non-zero replicated
-/// <see cref="DownedKeys.ReviveProgress"/> and shows that progress. Because
+/// <see cref="DownedMarker.View.ReviveProgress"/> and shows that progress. Because
 /// the progress field replicates, the circle appears for the reviver, the
 /// downed player, and any bystander -- no RPC plumbing.
 /// </summary>

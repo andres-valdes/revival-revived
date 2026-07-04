@@ -18,9 +18,9 @@ namespace RevivalRevived.Components;
 /// Authority split:
 ///   - The revive *timer* is peer-authoritative: the reviver's
 ///     <see cref="ReviveInteractable"/> accumulates the hold locally and sends
-///     <see cref="DownedKeys.RpcDoRevive"/> when complete.
+///     <see cref="DownedRpcs.DoRevive"/> when complete.
 ///   - The owner only enforces the bleed-out window (expiry -> death) and
-///     pauses it while channel pings (<see cref="DownedKeys.RpcChannel"/>)
+///     pauses it while channel pings (<see cref="DownedRpcs.Channel"/>)
 ///     are arriving.
 /// </summary>
 public class Revivable : MonoBehaviour {

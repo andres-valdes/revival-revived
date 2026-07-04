@@ -1,3 +1,4 @@
+using RpcTyped;
 using UnityEngine;
 using ZdoTyped;
 
@@ -72,7 +73,7 @@ public static class PlayerDownedExtensions {
             player.gameObject.AddComponent<Revivable>();
         }
 
-        player.m_nview.InvokeRPC(ZNetView.Everybody, DownedKeys.RpcOnDowned);
+        player.m_nview.GetRpcs<DownedRpcs>().OnDownedToAll();
         DownedMarker.Spawn(player);
 
         player.Message(MessageHud.MessageType.Center, "You are downed!");

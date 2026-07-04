@@ -245,6 +245,22 @@ Keys hash via GetStableHashCode at COMPILE time (parity-tested against
 assembly_utils.dll); misuse is a compile error (ZDO001-ZDO006). RevivalRevived's
 `DownedPlayerZdo` and `DownedMarker.View` are the in-repo examples.
 
+## Strongly-Typed RPCs: RpcTyped (PREFER THIS)
+
+The sibling repo **`../rpc-typed`** does the same for ZNetView RPCs: declare an
+`[RpcSet("MyMod")]` partial struct with `[Rpc]` partial void methods and the
+generator emits the wire-name constants, owner-routed/`ToAll`/`To(peer)`
+invokes, and typed `Register`/`Unregister` companions -- no loose RPC name
+strings (RPC001-RPC006 diagnostics on misuse). Read its `README.md`;
+RevivalRevived's `DownedRpcs` is the in-repo example.
+
+```csharp
+var rpcs = m_nview.GetRpcs<DownedRpcs>();
+rpcs.RegisterDoRevive((long sender) => ...);
+rpcs.Channel();        // routed to owner
+rpcs.OnDownedToAll();  // everybody
+```
+
 ## Common Pitfalls
 
 - **Writing to ZDO you don't own:** Data won't sync properly. Always check `IsOwner()` or `ClaimOwnership()` first.
