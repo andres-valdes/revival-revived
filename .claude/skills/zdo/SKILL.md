@@ -189,10 +189,17 @@ rpcs.DoThingTo(peerId, 42, "targeted");     // a specific peer
 Nest the set in a component for a typed `Rpc` accessor (type inferred, no
 `GetRpcs<>`): `Rpc.DoThingToAll(...)`, `Rpc.RegisterDoThing(...)`.
 
+When a component owns its RPCs, skip the set entirely: mark the **handler**
+methods with `[Rpc]` (first parameter is the sender peer id) and the generator
+writes a self-registering `Awake()` — which registers every handler and calls
+your optional `partial void OnAwake()` — plus the typed senders
+(`XToAll`/`XTo`/owner-routed `X`). No registration is written; do not declare
+your own `Awake` (put init in `OnAwake`). See `../rpc-typed/README.md`.
+
 Parameter types are checked at compile time against what `ZRpc` serializes:
 `int`, `uint`, `long`, `float`, `double`, `bool`, `string`, `ZPackage`,
 `Vector3`, `Quaternion`, `ZDOID`, `HitData` — up to three per RPC. Misuse is a
-compile error (`RPC001`–`RPC005`). RevivalRevived's `DownedRpcs` (registered
+compile error (`RPC001`–`RPC009`). RevivalRevived's `DownedRpcs` (registered
 on Player) is the in-repo example.
 
 ## Step 5: Handle ZNetView Lifecycle in Your Components
