@@ -23,11 +23,12 @@ static class TombStoneSetupReplacePatch {
         if (player == null || player.m_nview == null || !player.m_nview.IsValid()) return;
         if (ownerUID != player.GetPlayerID()) return;
 
-        var zdo = player.m_nview.GetZDO();
-        if (!zdo.GetBool(DownedKeys.GraveReplacePending)) return;
-        zdo.Set(DownedKeys.GraveReplacePending, false); // consume
+        var state = player.State();
+        if (!state.GraveReplacePending) return;
+        state.GraveReplacePending = false; // consume
 
-        var at = zdo.GetVec3(DownedKeys.GraveReplacePos, __instance.transform.position);
+        var at = state.GraveReplacePos;
+        if (at == Vector3.zero) at = __instance.transform.position; // no recorded spot
         __instance.transform.position = at;
         var body = __instance.GetComponent<Rigidbody>();
         if (body != null) {
@@ -38,9 +39,9 @@ static class TombStoneSetupReplacePatch {
         // Hand the spot over: the marker hides itself on each client as soon as
         // that client sees this grave, then its ZDO is destroyed.
         var marker = player.FindDownedMarker()
-                     ?? DownedMarker.FindFor(player.GetPlayerID()); // reconnect path: orphan, not linked
-        DownedMarker.MarkReplaced(marker);
-        zdo.Set(DownedKeys.Marker, ZDOID.None);
+                     ?? MarkerPrefab.FindFor(player.GetPlayerID()); // reconnect path: orphan, not linked
+        MarkerState.MarkReplaced(marker);
+        state.Marker = ZDOID.None;
     }
 }
 
@@ -56,14 +57,14 @@ static class PlayerOnDeathMarkerCrumblePatch {
         var nview = __instance.m_nview;
         if (nview == null || !nview.IsValid() || !nview.IsOwner()) return;
 
-        var zdo = nview.GetZDO();
-        if (!zdo.GetBool(DownedKeys.GraveReplacePending)) return; // grave spawned (consumed), or never downed
-        zdo.Set(DownedKeys.GraveReplacePending, false);
+        var state = __instance.State();
+        if (!state.GraveReplacePending) return; // grave spawned (consumed), or never downed
+        state.GraveReplacePending = false;
 
         var marker = __instance.FindDownedMarker()
-                     ?? DownedMarker.FindFor(__instance.GetPlayerID());
-        zdo.Set(DownedKeys.Marker, ZDOID.None);
-        DownedMarker.Crumble(marker);
+                     ?? MarkerPrefab.FindFor(__instance.GetPlayerID());
+        state.Marker = ZDOID.None;
+        MarkerState.Crumble(marker);
         Plugin.Logger.LogInfo($"{__instance.GetPlayerName()} died with no grave to drop; marker crumbled");
     }
 }

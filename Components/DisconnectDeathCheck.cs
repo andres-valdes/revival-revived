@@ -35,7 +35,7 @@ public class DisconnectDeathCheck : MonoBehaviour {
             // If we legitimately went down again after spawning, stop.
             if (m_player.IsDowned()) { Destroy(this); yield break; }
 
-            var orphan = DownedMarker.FindFor(pid);
+            var orphan = MarkerPrefab.FindFor(pid);
             if (orphan != null) {
                 Plugin.Logger.LogInfo($"{m_player.GetPlayerName()} reconnected with an orphaned downed marker -> dying");
                 KillDowned(m_player);
@@ -57,22 +57,22 @@ public class DisconnectDeathCheck : MonoBehaviour {
     private static void KillDowned(Player player) {
         if (player == null || !player.m_nview.IsValid() || !player.m_nview.IsOwner()) return;
 
-        var zdo = player.m_nview.GetZDO();
-        zdo.Set(DownedKeys.Downed, false);
+        var state = player.State();
+        state.Downed = false;
 
         // The marker is NOT destroyed here: it outlives the death so the swap to
         // the real grave (or the crumble, when no grave spawns) is gap-free. The
         // replace request on our own player ZDO is consumed by the grave-spawn
         // patch (grave spawned: reposition + mark the marker replaced) or the
         // OnDeath postfix (no grave: crumble the marker).
-        var orphan = DownedMarker.FindFor(player.GetPlayerID());
+        var orphan = MarkerPrefab.FindFor(player.GetPlayerID());
         var linked = player.FindDownedMarker();
         var replaceAt = orphan != null ? orphan.transform.position
                       : linked != null ? linked.transform.position
                       : (Vector3?)null;
         if (replaceAt != null) {
-            zdo.Set(DownedKeys.GraveReplacePending, true);
-            zdo.Set(DownedKeys.GraveReplacePos, replaceAt.Value);
+            state.GraveReplacePending = true;
+            state.GraveReplacePos = replaceAt.Value;
         }
 
         var rev = player.GetComponent<Revivable>();

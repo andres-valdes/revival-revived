@@ -29,7 +29,7 @@ public class ReviveInteractable : MonoBehaviour, Hoverable, Interactable {
     /// <summary>The character ZDOID this marker is linked to, or None.</summary>
     private ZDOID LinkedPlayerZdoId() =>
         m_nview != null && m_nview.IsValid()
-            ? m_nview.GetZDO().GetZDOID(DownedKeys.MarkerPlayer)
+            ? new MarkerState(m_nview).LinkedPlayer
             : ZDOID.None;
 
     /// <summary>The downed player linked to this marker, or null.</summary>
@@ -67,7 +67,7 @@ public class ReviveInteractable : MonoBehaviour, Hoverable, Interactable {
     /// <summary>The downed player's name from the marker ZDO, or "Viking".</summary>
     private string OwnerName() {
         if (m_nview == null || !m_nview.IsValid()) return "Viking";
-        var name = m_nview.GetZDO().GetString(DownedKeys.OwnerName);
+        var name = new MarkerState(m_nview).OwnerName;
         return string.IsNullOrEmpty(name) ? "Viking" : name;
     }
 

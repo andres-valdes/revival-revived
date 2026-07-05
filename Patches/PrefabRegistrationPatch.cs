@@ -11,6 +11,6 @@ namespace ReviveAllies.Patches;
 [HarmonyPatch(typeof(ZNetScene), "Awake")]
 static class ZNetSceneAwakeRegisterPrefabsPatch {
     static void Postfix(ZNetScene __instance) {
-        DownedMarker.RegisterPrefab(__instance);
+        MarkerPrefab.RegisterPrefab(__instance);
     }
 }

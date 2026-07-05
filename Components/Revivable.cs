@@ -114,8 +114,8 @@ public class Revivable : MonoBehaviour {
         LocalGiveUpFraction = 0f;
         // End the window now: expiring the clock routes through the same
         // expiry -> death path (marker becomes the real grave).
-        m_nview!.GetZDO().Set(DownedKeys.DownedTime,
-            (float)ZNet.instance.GetTimeSeconds() - Plugin.ReviveWindow - 1f);
+        var state = new DownedState(m_nview!);
+        state.DownedTime = (float)ZNet.instance.GetTimeSeconds() - Plugin.ReviveWindow - 1f;
         if (m_player!.GetHealth() > 0f) m_player.SetHealth(0f);
         Plugin.Logger.LogInfo($"{m_player.GetPlayerName()} gave up");
     }
@@ -142,21 +142,21 @@ public class Revivable : MonoBehaviour {
     /// channeling.
     /// </summary>
     private void UpdateReviveChannel() {
-        var zdo = m_nview!.GetZDO();
+        var state = new DownedState(m_nview!);
         bool channeling = Time.time - m_lastChannelTime < ChannelPingTimeout;
 
         if (channeling) {
             // A press-mode revive completes on the first ping.
             if (Plugin.RevivePressMode) {
-                zdo.Set(DownedKeys.ReviveProgress, 1f);
+                state.ReviveProgress = 1f;
                 m_player!.ReviveFromDowned(m_lastChannelSender);
                 return;
             }
 
-            PauseWindowClock(zdo, Time.deltaTime);
+            state.DownedTime += Time.deltaTime; // pause the bleed-out window while channeling
             m_progress += Time.deltaTime;
             if (m_progress >= Plugin.ReviveDuration) {
-                zdo.Set(DownedKeys.ReviveProgress, 1f);
+                state.ReviveProgress = 1f;
                 m_player!.ReviveFromDowned(m_lastChannelSender);
                 return;
             }
@@ -166,7 +166,7 @@ public class Revivable : MonoBehaviour {
             return; // idle: nothing to publish
         }
 
-        zdo.Set(DownedKeys.ReviveProgress, Mathf.Clamp01(m_progress / Plugin.ReviveDuration));
+        state.ReviveProgress = Mathf.Clamp01(m_progress / Plugin.ReviveDuration);
     }
 
     private void Restore() {
@@ -177,10 +177,6 @@ public class Revivable : MonoBehaviour {
             m_player.m_body.isKinematic = false;
         }
     }
-
-    /// <summary>Shift the downed clock forward by dt so the window doesn't drain while channeling.</summary>
-    private static void PauseWindowClock(ZDO zdo, float dt) =>
-        zdo.Set(DownedKeys.DownedTime, zdo.GetFloat(DownedKeys.DownedTime) + dt);
 
     /// <summary>A reviver is channeling (routed ping). Records who, for the revive message.</summary>
     public void ChannelPing(long sender) {

@@ -4,23 +4,17 @@ using UnityEngine;
 namespace ReviveAllies.Components;
 
 /// <summary>
-/// Turns a freshly-spawned tombstone into a downed-player "revive marker": strips
-/// the loot/despawn scripts so it is inert, recolors its accent green, and
-/// attaches a <see cref="ReviveInteractable"/>. The tombstone keeps its mesh,
-/// collider, Rigidbody and Floating, so it drops in with the vanilla pop, bobs
-/// on water, and its position replicates like any networked object.
+/// The visual behaviour on a revive-marker instance (every client that
+/// instantiates the prefab). It recolours the tombstone's red accent to
+/// revive-green and lerps it back to red as the revive window runs out, shows
+/// the downed player's name, and -- once the real grave has taken its place --
+/// hides itself gap-free and destroys the ZDO.
 ///
-/// The accent colour is not static: it lerps from revive-green back to the
-/// tombstone's original (red) accent as the revive window runs out, so the
-/// marker visually "becomes" a grave right as it converts to the real one.
-///
-/// Conversion is idempotent and ZDO-driven: it runs on every client whose
-/// tombstone ZDO has the <see cref="DownedKeys.IsDownedMarker"/> flag set (owner
-/// spawns it directly; remotes convert from a <c>TombStone.Start</c> postfix).
-/// The marker's ZDO fields are keyed by <see cref="DownedKeys"/> and read/written
-/// through the vanilla ZDO primitives; the owner is its sole writer.
+/// This class is only the presentation. The marker's data is <see cref="MarkerState"/>,
+/// the prefab and spawning are <see cref="MarkerPrefab"/>, and the marker's
+/// lifecycle operations are the statics on <see cref="MarkerState"/>.
 /// </summary>
-public partial class DownedMarker : MonoBehaviour {
+public class DownedMarker : MonoBehaviour {
     /// <summary>Revive-window accent colour at full time remaining.</summary>
     public static readonly Color ReviveGreen = new(0.25f, 1f, 0.35f);
 
@@ -43,227 +37,8 @@ public partial class DownedMarker : MonoBehaviour {
     public int TintedLights => m_lights.Count;
     public int TintedMaterials => m_tinted.Count;
 
-    /// <summary>Ember/glow objects deleted from the prefab template at build time (test hook).</summary>
-    public static int TemplateEffectsRemoved { get; private set; }
-
     /// <summary>0 = fully green (window fresh), 1 = original grave red (window elapsed). Test hook.</summary>
     public float CurrentBlend { get; private set; }
-
-    // =====================================================================
-    //  Marker lifecycle (spawn / find / destroy)
-    // =====================================================================
-
-    /// <summary>Upward launch velocity applied to the last spawned marker (test hook).</summary>
-    public static float LastPopVelY { get; private set; }
-
-    /// <summary>
-    /// Spawn the green marker for a freshly-downed player (owner only) and
-    /// cross-link it to the player via ZDO. Instantiates OUR registered prefab;
-    /// remote clients instantiate the same prefab from the replicated ZDO.
-    /// </summary>
-    public static void Spawn(Player player) {
-        var prefab = ZNetScene.instance != null ? ZNetScene.instance.GetPrefab(PrefabName) : null;
-        if (prefab == null) {
-            Plugin.Logger.LogError($"DownedMarker.Spawn: prefab '{PrefabName}' is not registered");
-            return;
-        }
-
-        var go = Object.Instantiate(prefab, player.GetCenterPoint(), player.transform.rotation);
-        var nview = go.GetComponent<ZNetView>();
-        if (nview == null || !nview.IsValid()) {
-            Plugin.Logger.LogError("DownedMarker.Spawn: marker has no valid ZNetView");
-            return;
-        }
-
-        var markerZdo = nview.GetZDO();
-        markerZdo.Set(DownedKeys.IsDownedMarker, true);          // distinguishes from real graves
-        markerZdo.Set(DownedKeys.MarkerPlayer, player.m_nview.GetZDO().m_uid);
-        markerZdo.Set(DownedKeys.OwnerPlayerId, player.GetPlayerID()); // stable across rejoin
-        markerZdo.Set(DownedKeys.OwnerName, player.GetPlayerName());   // world text
-        markerZdo.Set(DownedKeys.DownedTime, (float)ZNet.instance.GetTimeSeconds()); // fallback clock
-
-        player.m_nview.GetZDO().Set(DownedKeys.Marker, nview.GetZDO().m_uid);
-
-        // Vanilla tombstone "drop-in" pop (TombStone.Setup normally does this;
-        // our marker has no TombStone script).
-        var body = go.GetComponent<Rigidbody>();
-        if (body != null) body.linearVelocity = new Vector3(0f, 5f, 0f);
-        LastPopVelY = body != null ? body.linearVelocity.y : 0f;
-
-        Plugin.Logger.LogInfo($"Spawned downed marker for {player.GetPlayerName()}, ZDOID {nview.GetZDO().m_uid}");
-    }
-
-    /// <summary>
-    /// Find the marker belonging to a stable PlayerID (used to detect the orphan
-    /// left behind when a downed player disconnects).
-    /// </summary>
-    public static GameObject? FindFor(long playerId) {
-        if (playerId == 0L) return null;
-        foreach (var dm in Object.FindObjectsOfType<DownedMarker>()) {
-            var nv = dm.GetComponent<ZNetView>();
-            if (nv == null || !nv.IsValid()) continue;
-            var zdo = nv.GetZDO();
-            // A replaced marker is a lame-duck prop awaiting destruction, not
-            // evidence of a downed player (it must not re-trigger the
-            // reconnect-death check while it lingers).
-            if (zdo.GetBool(DownedKeys.ReplacedByGrave)) continue;
-            if (zdo.GetLong(DownedKeys.OwnerPlayerId) == playerId) return dm.gameObject;
-        }
-        return null;
-    }
-
-    /// <summary>
-    /// The real grave has spawned in this marker's place: flag the marker ZDO so
-    /// every client swaps its presentation locally, gap-free (see
-    /// <see cref="DownedKeys.ReplacedByGrave"/>). The instance handles hide +
-    /// delayed destroy in its Update.
-    /// </summary>
-    public static void MarkReplaced(GameObject? marker) {
-        if (marker == null) return;
-        var nview = marker.GetComponent<ZNetView>();
-        if (nview == null || !nview.IsValid()) return;
-        if (!nview.IsOwner()) nview.ClaimOwnership();
-        nview.GetZDO().Set(DownedKeys.ReplacedByGrave, true);
-    }
-
-    /// <summary>Effect objects created by the last marker crumble (test hook).</summary>
-    public static int LastCrumbleEffectCount { get; private set; }
-
-    /// <summary>Total crumbles this session (test hook; use deltas across an action).</summary>
-    public static int CrumbleEvents { get; private set; }
-
-    /// <summary>
-    /// Despawn the marker the way an emptied grave does: play the tombstone's
-    /// own crumble effect (a networked vfx, so it covers the disappearance on
-    /// every client) and destroy it. Used on revive, and on death when no grave
-    /// spawns to take the marker's place.
-    /// </summary>
-    public static void Crumble(GameObject? marker) {
-        if (marker == null) return;
-        var effect = FindGraveCrumbleEffect();
-        if (effect != null) {
-            var created = effect.Create(marker.transform.position, marker.transform.rotation);
-            LastCrumbleEffectCount = created?.Length ?? 0;
-            CrumbleEvents++;
-        }
-        DestroyMarker(marker);
-    }
-
-    private static EffectList? s_crumbleEffect;
-
-    /// <summary>The vanilla tombstone's remove-effect (what plays when an emptied grave despawns).</summary>
-    private static EffectList? FindGraveCrumbleEffect() {
-        if (s_crumbleEffect != null) return s_crumbleEffect;
-        var prefab = ZNetScene.instance != null ? FindTombstonePrefab(ZNetScene.instance) : null;
-        var tomb = prefab != null ? prefab.GetComponent<TombStone>() : null;
-        if (tomb != null && tomb.m_removeEffect != null && tomb.m_removeEffect.m_effectPrefabs.Length > 0) {
-            s_crumbleEffect = tomb.m_removeEffect;
-        } else {
-            Plugin.Logger.LogWarning("DownedMarker: no grave crumble effect found");
-        }
-        return s_crumbleEffect;
-    }
-
-    /// <summary>
-    /// Crumble away the marker linked from a player's ZDO and clear the link:
-    /// plays the grave despawn effect, then destroys. Used on revive -- the
-    /// marker should visibly crumble, not blink out.
-    /// </summary>
-    public static void CrumbleLinkedMarker(ZNetView playerNview) {
-        var playerZdo = playerNview.GetZDO();
-        var markerId = playerZdo.GetZDOID(DownedKeys.Marker);
-        if (markerId == ZDOID.None) return;
-        playerZdo.Set(DownedKeys.Marker, ZDOID.None);
-        Crumble(ZNetScene.instance.FindInstance(markerId));
-    }
-
-    /// <summary>
-    /// Destroy a marker tombstone, claiming ownership first: an orphaned marker
-    /// (left by a disconnect) is owned by the server, and a non-owner Destroy
-    /// silently fails to replicate.
-    /// </summary>
-    public static void DestroyMarker(GameObject? go) {
-        if (go == null) return;
-        var nview = go.GetComponent<ZNetView>();
-        if (nview == null || !nview.IsValid()) return;
-        if (!nview.IsOwner()) nview.ClaimOwnership();
-        nview.Destroy();
-    }
-
-    // =====================================================================
-    //  Prefab registration (our own networked prefab -- no tombstone conversion)
-    // =====================================================================
-
-    /// <summary>Networked prefab name; must be identical (and registered) on every client.</summary>
-    public const string PrefabName = "RevivalRevived_DownedMarker";
-
-    private static GameObject? s_prefabHolder;
-    private static GameObject? s_prefabTemplate;
-
-    /// <summary>
-    /// Build (once) and register the marker prefab with a ZNetScene. Called from
-    /// the ZNetScene.Awake postfix on every client, so remote instances are
-    /// instantiated directly from this prefab via the ZDO prefab hash -- no
-    /// spawn-a-tombstone-and-convert hack, no TombStone.Start patch.
-    ///
-    /// The template is the vanilla player tombstone cloned under an inactive
-    /// holder (so no Awake runs), with the loot/despawn scripts removed and our
-    /// components pre-attached.
-    /// </summary>
-    public static void RegisterPrefab(ZNetScene scene) {
-        if (s_prefabTemplate == null) {
-            var original = FindTombstonePrefab(scene);
-            if (original == null) {
-                Plugin.Logger.LogError("DownedMarker: no TombStone prefab found to derive the marker from");
-                return;
-            }
-
-            s_prefabHolder = new GameObject("RevivalRevived_Prefabs");
-            s_prefabHolder.SetActive(false); // children never run Awake here
-            Object.DontDestroyOnLoad(s_prefabHolder);
-
-            var template = Object.Instantiate(original, s_prefabHolder.transform);
-            template.name = PrefabName;
-
-            // Curate the template ONCE so the prefab contains exactly what the
-            // marker is -- instances never add or remove anything.
-            // (A fully from-scratch prefab would need an AssetBundle: the stone
-            // model, materials, collider and Floating tuning only exist in the
-            // vanilla prefab, so we derive and curate instead.)
-            var tomb = template.GetComponent<TombStone>();
-            if (tomb != null) Object.DestroyImmediate(tomb);
-            var container = template.GetComponent<Container>();
-            if (container != null) Object.DestroyImmediate(container);
-            RemoveGraveEffects(template);
-
-            // Our behaviour, baked into the prefab.
-            template.AddComponent<DownedMarker>();
-            template.AddComponent<ReviveInteractable>();
-
-            s_prefabTemplate = template;
-            Plugin.Logger.LogInfo($"DownedMarker: built prefab '{PrefabName}' from '{original.name}'");
-        }
-
-        var hash = PrefabName.GetStableHashCode();
-        if (!scene.m_namedPrefabs.ContainsKey(hash)) {
-            scene.m_prefabs.Add(s_prefabTemplate);
-            scene.m_namedPrefabs.Add(hash, s_prefabTemplate);
-            Plugin.Logger.LogInfo($"DownedMarker: registered prefab '{PrefabName}' with ZNetScene");
-        }
-    }
-
-    private static GameObject? FindTombstonePrefab(ZNetScene scene) {
-        var byName = scene.GetPrefab("Player_tombstone");
-        if (byName != null && byName.GetComponent<TombStone>() != null) return byName;
-        foreach (var p in scene.m_prefabs) {
-            if (p != null && p.GetComponent<TombStone>() != null) return p;
-        }
-        return null;
-    }
-
-    // =====================================================================
-    //  Instance behaviour (runs on every client that instantiates the prefab)
-    // =====================================================================
 
     private void Awake() {
         m_nview = GetComponent<ZNetView>();
@@ -275,34 +50,37 @@ public partial class DownedMarker : MonoBehaviour {
         // Show the downed player's name like a vanilla grave would (the ZDO is
         // populated by the time Start runs, on the spawner and on remotes).
         if (m_nview == null || !m_nview.IsValid()) return;
-        var ownerName = m_nview.GetZDO().GetString(DownedKeys.OwnerName);
+        var ownerName = new MarkerState(m_nview).OwnerName;
         if (string.IsNullOrEmpty(ownerName)) return;
         var worldText = GetComponentInChildren<TMPro.TMP_Text>(true);
         if (worldText != null) worldText.text = ownerName;
     }
 
-    /// <summary>
-    /// Delete ember particle systems and flare/glow children from the prefab
-    /// TEMPLATE. The grave effects belong only on a real (unrevivable) grave --
-    /// the marker prefab simply doesn't have them, so instances never need to
-    /// disable anything.
-    /// </summary>
-    private static void RemoveGraveEffects(GameObject template) {
-        foreach (var ps in template.GetComponentsInChildren<ParticleSystem>(includeInactive: true)) {
-            if (ps != null && ps.gameObject != template) {
-                Object.DestroyImmediate(ps.gameObject);
-                TemplateEffectsRemoved++;
-            }
+    private void Update() {
+        if (m_nview == null || !m_nview.IsValid()) return;
+        var marker = new MarkerState(m_nview);
+
+        // The real grave took our place: hide once it is visible here, destroy
+        // the ZDO after a grace period. No gradient/interaction from here on.
+        if (marker.ReplacedByGrave) {
+            UpdateReplaced();
+            return;
         }
-        foreach (var t in template.GetComponentsInChildren<Transform>(includeInactive: true)) {
-            if (t == null || t.gameObject == template) continue;
-            var n = t.name.ToLowerInvariant();
-            if (n.Contains("flare") || n.Contains("glow")) {
-                Object.DestroyImmediate(t.gameObject);
-                TemplateEffectsRemoved++;
-            }
-        }
+
+        // Blend from green back to the grave's own red as the window elapses.
+        // The clock is read from the LINKED PLAYER's ZDO (its owner maintains it,
+        // including the pause-while-channeling shift); fall back to the marker's
+        // own spawn-time value when the player ZDO is out of range.
+        var playerZdoId = marker.LinkedPlayer;
+        var playerZdo = playerZdoId != ZDOID.None ? ZDOMan.instance.GetZDO(playerZdoId) : null;
+        var downedTime = playerZdo != null
+            ? new DownedState(playerZdo).DownedTime
+            : marker.DownedTime;
+        var elapsed = (float)ZNet.instance.GetTimeSeconds() - downedTime;
+        ApplyBlend(Mathf.Clamp01(elapsed / Plugin.ReviveWindow));
     }
+
+    // ---- Accent recolouring (green <-> grave red) --------------------------
 
     /// <summary>Find the red accent sources and remember their original colours.</summary>
     private void CaptureAccents() {
@@ -355,6 +133,9 @@ public partial class DownedMarker : MonoBehaviour {
         }
     }
 
+    /// <summary>True if the marker recoloured at least one accent source (test hook).</summary>
+    public bool IsGreen() => (TintedLights > 0 || TintedMaterials > 0) && CurrentBlend < 0.5f;
+
     // ---- Replaced-by-grave handoff (local presentation, then destroy) ------
 
     /// <summary>Local time we first observed the replaced flag; -1 = not replaced.</summary>
@@ -402,30 +183,4 @@ public partial class DownedMarker : MonoBehaviour {
         foreach (var c in GetComponentsInChildren<Collider>()) c.enabled = false;
         foreach (var l in GetComponentsInChildren<Light>()) l.enabled = false;
     }
-
-    private void Update() {
-        if (m_nview == null || !m_nview.IsValid()) return;
-        var zdo = m_nview.GetZDO();
-
-        // The real grave took our place: hide once it is visible here, destroy
-        // the ZDO after a grace period. No gradient/interaction from here on.
-        if (zdo.GetBool(DownedKeys.ReplacedByGrave)) {
-            UpdateReplaced();
-            return;
-        }
-
-        // Blend from green back to the grave's own red as the window elapses.
-        // The clock is read from the LINKED PLAYER's ZDO (its owner maintains it,
-        // including the pause-while-channeling shift).
-        var playerZdoId = zdo.GetZDOID(DownedKeys.MarkerPlayer);
-        var playerZdo = playerZdoId != ZDOID.None ? ZDOMan.instance.GetZDO(playerZdoId) : null;
-        var downedTime = playerZdo != null
-            ? playerZdo.GetFloat(DownedKeys.DownedTime)
-            : zdo.GetFloat(DownedKeys.DownedTime); // fallback: marker's spawn-time value
-        var elapsed = (float)ZNet.instance.GetTimeSeconds() - downedTime;
-        ApplyBlend(Mathf.Clamp01(elapsed / Plugin.ReviveWindow));
-    }
-
-    /// <summary>True if the marker recoloured at least one accent source (test hook).</summary>
-    public bool IsGreen() => (TintedLights > 0 || TintedMaterials > 0) && CurrentBlend < 0.5f;
 }
