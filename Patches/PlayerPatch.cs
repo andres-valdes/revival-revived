@@ -1,8 +1,8 @@
 using HarmonyLib;
-using RevivalRevived.Components;
+using ReviveAllies.Components;
 using UnityEngine;
 
-namespace RevivalRevived.Patches;
+namespace ReviveAllies.Patches;
 
 /// <summary>
 /// Registers our custom RPCs on Player and restores downed state on late join.

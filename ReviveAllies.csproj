@@ -3,9 +3,9 @@
   <PropertyGroup>
     <TargetFramework>net472</TargetFramework>
     <LangVersion>latest</LangVersion>
-    <AssemblyName>RevivalRevived</AssemblyName>
-    <RootNamespace>RevivalRevived</RootNamespace>
-    <Version>0.2.0</Version>
+    <AssemblyName>ReviveAllies</AssemblyName>
+    <RootNamespace>ReviveAllies</RootNamespace>
+    <Version>0.3.0</Version>
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 

@@ -1,6 +1,6 @@
-# Revival Revived
+# Revive Allies
 
-Allows you to revive your friends where they fell, within a bleed-out window, before death becomes permanent.
+TODO: write the mod description.
 
 ## USAGE
 
@@ -11,7 +11,7 @@ Allows you to revive your friends where they fell, within a bleed-out window, be
 
 ## CONFIGURATION
 
-`BepInEx/config/com.andres.revivalrevived.cfg` (created on first launch):
+`BepInEx/config/com.andres.reviveallies.cfg` (created on first launch):
 
 - `Revive.Mode` — `Hold` (default) or `Press`.
 - `Revive.HoldTimeSeconds` — how long the channel takes (default 4).

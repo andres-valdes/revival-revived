@@ -3,7 +3,7 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.5.2.0
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RevivalRevived", "RevivalRevived.csproj", "{350377A8-9A74-C5FC-58F8-BE1DF64458E0}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ReviveAllies", "ReviveAllies.csproj", "{350377A8-9A74-C5FC-58F8-BE1DF64458E0}"
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = ".decompiled", ".decompiled", "{EEA1B339-18E3-AB22-865C-BCC5CBEC5B54}"
 EndProject

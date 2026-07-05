@@ -5,13 +5,13 @@ using System.IO;
 using System.Text;
 using BepInEx;
 using HarmonyLib;
-using RevivalRevived.Components;
+using ReviveAllies.Components;
 using UnityEngine;
 
-namespace RevivalRevived.E2E;
+namespace ReviveAllies.E2E;
 
 /// <summary>
-/// Autonomous end-to-end test harness for RevivalRevived.
+/// Autonomous end-to-end test harness for ReviveAllies.
 ///
 /// Three modes, selected by RR_E2E_ROLE:
 ///   (unset)  single-process: downed/constraints/revive/expiry against local code.

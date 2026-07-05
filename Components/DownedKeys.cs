@@ -1,6 +1,6 @@
 using System.Collections.Generic;
 
-namespace RevivalRevived.Components;
+namespace ReviveAllies.Components;
 
 /// <summary>
 /// ZDO field keys and routed-RPC names for the downed/revive feature. Field

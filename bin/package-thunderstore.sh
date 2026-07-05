@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Package RevivalRevived for Thunderstore.
+# Package ReviveAllies for Thunderstore.
 #
 # Builds the plugin in Release, stages the Thunderstore layout (manifest.json,
 # README.md, CHANGELOG.md, icon.png, plugin DLL at the archive root), validates
 # everything Thunderstore rejects uploads for, and produces
-#   dist/RevivalRevived-<version>.zip
+#   dist/ReviveAllies-<version>.zip
 #
 # The version in Plugin.cs (PluginVersion) is the single source of truth; the
 # manifest and csproj must agree or the script fails.
@@ -14,7 +14,7 @@ cd "$(dirname "$0")/.."
 
 TS_DIR=thunderstore
 DIST_DIR=dist
-NAME=RevivalRevived
+NAME=ReviveAllies
 
 fail() { echo "package-thunderstore: ERROR: $*" >&2; exit 1; }
 

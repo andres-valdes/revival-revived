@@ -1,6 +1,6 @@
 #!/bin/sh
 # Launch two Valheim instances joined to the same world for manual testing of
-# RevivalRevived. Instance 1 hosts over the raw-TCP CustomSocket backend;
+# ReviveAllies. Instance 1 hosts over the raw-TCP CustomSocket backend;
 # instance 2 auto-joins it on localhost. No tests run, nothing auto-quits --
 # both windows are yours to play (down one character, revive with the other).
 #

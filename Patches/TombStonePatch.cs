@@ -1,8 +1,8 @@
 using HarmonyLib;
-using RevivalRevived.Components;
+using ReviveAllies.Components;
 using UnityEngine;
 
-namespace RevivalRevived.Patches;
+namespace ReviveAllies.Patches;
 
 /// <summary>
 /// When the real (loot) tombstone spawns after a downed player dies, place it

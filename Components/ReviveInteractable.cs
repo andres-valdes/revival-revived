@@ -1,6 +1,6 @@
 using UnityEngine;
 
-namespace RevivalRevived.Components;
+namespace ReviveAllies.Components;
 
 /// <summary>
 /// Added to the downed marker. Implements Hoverable/Interactable and forwards

@@ -1,6 +1,6 @@
 using System;
 
-namespace RevivalRevived.E2E;
+namespace ReviveAllies.E2E;
 
 /// <summary>
 /// Central place for E2E configuration read from environment variables.

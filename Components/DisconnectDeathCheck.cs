@@ -1,7 +1,7 @@
 using System.Collections;
 using UnityEngine;
 
-namespace RevivalRevived.Components;
+namespace ReviveAllies.Components;
 
 /// <summary>
 /// Enforces "downed + disconnect = death". Added to the local player when it

@@ -1,7 +1,7 @@
 using HarmonyLib;
-using RevivalRevived.Components;
+using ReviveAllies.Components;
 
-namespace RevivalRevived.Patches;
+namespace ReviveAllies.Patches;
 
 /// <summary>
 /// Intercepts CheckDeath to introduce the downed state between

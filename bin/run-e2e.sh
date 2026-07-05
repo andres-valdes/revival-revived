@@ -1,5 +1,5 @@
 #!/bin/sh
-# Autonomous E2E launcher for RevivalRevived.
+# Autonomous E2E launcher for ReviveAllies.
 # Launches Valheim+BepInEx with the in-game test harness enabled, waits for it
 # to finish (the harness quits the game itself), and prints the result file.
 set -u

@@ -1,7 +1,7 @@
 using System.Collections.Generic;
 using UnityEngine;
 
-namespace RevivalRevived.Components;
+namespace ReviveAllies.Components;
 
 /// <summary>
 /// Turns a freshly-spawned tombstone into a downed-player "revive marker": strips

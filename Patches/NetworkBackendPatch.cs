@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using HarmonyLib;
 
-namespace RevivalRevived.Patches;
+namespace ReviveAllies.Patches;
 
 /// <summary>
 /// E2E-only: enables Valheim's dormant raw-socket ("CustomSocket") network

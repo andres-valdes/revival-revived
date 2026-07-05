@@ -143,7 +143,7 @@ ZDOID target = zdo.GetZDOID(Keys.Target);
 
 Getters take a default: `GetInt`/`GetFloat`/`GetLong`/`GetBool`/`GetString`/
 `GetVec3`/`GetQuaternion(hash, default)` and `GetZDOID(pair)`. Setters are
-`Set(hash, value)` (owner only). RevivalRevived keeps its field-hash constants
+`Set(hash, value)` (owner only). ReviveAllies keeps its field-hash constants
 in `DownedKeys`.
 
 ## Step 4: RPCs for Multiplayer Communication
@@ -176,7 +176,7 @@ void Send(ZNetView nview) {
 `ZNetView.Register`/the RPC arguments handle up to three parameters of the
 types `ZRpc` serializes: `int`, `uint`, `long`, `float`, `double`, `bool`,
 `string`, `ZPackage`, `Vector3`, `Quaternion`, `ZDOID`, `HitData`.
-RevivalRevived's `DownedKeys` holds its RPC name constants.
+ReviveAllies's `DownedKeys` holds its RPC name constants.
 
 ## Step 5: Handle ZNetView Lifecycle in Your Components
 

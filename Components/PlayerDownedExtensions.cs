@@ -1,6 +1,6 @@
 using UnityEngine;
 
-namespace RevivalRevived.Components;
+namespace ReviveAllies.Components;
 
 /// <summary>
 /// Downed-state domain operations as extensions on <see cref="Player"/>.

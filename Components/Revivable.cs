@@ -1,6 +1,6 @@
 using UnityEngine;
 
-namespace RevivalRevived.Components;
+namespace ReviveAllies.Components;
 
 /// <summary>
 /// Present on a downed Player on <em>every</em> client. Two jobs:

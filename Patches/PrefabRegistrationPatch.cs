@@ -1,7 +1,7 @@
 using HarmonyLib;
-using RevivalRevived.Components;
+using ReviveAllies.Components;
 
-namespace RevivalRevived.Patches;
+namespace ReviveAllies.Patches;
 
 /// <summary>
 /// Register the mod's networked prefabs on every client as soon as the scene's

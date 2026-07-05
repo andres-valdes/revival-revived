@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.0
+
+TODO: write the 0.3.0 release notes.
+
 ## 0.2.0
 
 Reliability pass on the revive flow, especially in multiplayer with real

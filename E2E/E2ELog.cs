@@ -1,7 +1,7 @@
 using System;
 using System.IO;
 
-namespace RevivalRevived.E2E;
+namespace ReviveAllies.E2E;
 
 /// <summary>
 /// Reliable per-process logging for the E2E harness. Writes to BepInEx's logger
