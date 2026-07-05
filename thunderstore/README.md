@@ -17,7 +17,9 @@ TODO: write the mod description.
 - `Revive.HoldTimeSeconds` — how long the channel takes (default 4).
 - `Revive.WindowSeconds` — how long you stay revivable (default 30).
 
-All players in a session should run the mod. Timing is authoritative on the downed player's side.
+These settings are **server-authoritative**: the host's values govern everyone
+in the session and are replicated to connected players, so a client's own
+settings for these are ignored. All players should still run the mod.
 
 ## CONTACT ME
 
