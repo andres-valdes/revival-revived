@@ -2,11 +2,19 @@
 
 ## 0.3.1
 
-TODO: write the 0.3.1 release notes.
+Internal cleanup of the downed/revive logic, with one gameplay tweak: while you
+hold your "Use" key to give up, an ally can no longer finish reviving you until
+you let go. Holding "give up" now reliably means you want to die.
 
 ## 0.3.0
 
-TODO: write the 0.3.0 release notes.
+First release under the ReviveAllies name.
+
+- Give up: hold your own "Use" key (E) while downed to end it early — a red
+  circle fills and you die immediately instead of waiting out the window.
+- Revive settings are now controlled by the server: the host's revive window,
+  hold time and mode apply to everyone in the session, and a client's own
+  values for these are ignored.
 
 ## 0.2.0
 
