@@ -450,7 +450,7 @@ public class E2ERunner : MonoBehaviour {
         if (me2 == null) { Record("rejoin_reconnect", false, "no local player after reconnect"); yield break; }
         Record("rejoin_reconnect", true, $"name={me2.GetPlayerName()}");
 
-        // On reconnect the DisconnectDeathCheck should find the orphan and kill us.
+        // On reconnect the reconnect-orphan check should find it and kill us.
         Log("E2E[client]: waiting for disconnect-death on reconnect...");
         bool diedOnReconnect = false;
         bool markerGone = false;
@@ -937,8 +937,8 @@ public class E2ERunner : MonoBehaviour {
         float maxFrac = 0f;
         bool sawRed = false;
         while (w < 6f && !player.IsDead()) {
-            player.GetComponent<Revivable>()?.SimulateGiveUpHold();
-            maxFrac = Mathf.Max(maxFrac, Revivable.LocalGiveUpFraction);
+            player.GetComponent<DownedController>()?.SimulateGiveUpHold();
+            maxFrac = Mathf.Max(maxFrac, DownedController.LocalGiveUpFraction);
             if (ReviveProgressUI.Visible && ReviveProgressUI.GivingUp) sawRed = true;
             w += Time.unscaledDeltaTime;
             yield return null;
@@ -948,7 +948,7 @@ public class E2ERunner : MonoBehaviour {
         bool dead = player.IsDead();
         bool notDowned = !player.IsDowned();
         bool realTombstone = FindRealGraveNear(player.transform.position, 999f) != null;
-        bool fractionReset = Revivable.LocalGiveUpFraction <= 0.01f;
+        bool fractionReset = DownedController.LocalGiveUpFraction <= 0.01f;
 
         Record(T, dead && notDowned && sawRed && maxFrac > 0.5f && realTombstone && fractionReset,
             $"dead={dead} notDowned={notDowned} sawRed={sawRed} maxFrac={maxFrac:F2} " +
@@ -972,7 +972,7 @@ public class E2ERunner : MonoBehaviour {
         yield return new WaitForSecondsRealtime(0.5f);
         bool downed = player.IsDowned();
         bool notDead = !player.IsDead();
-        bool hasRevivable = player.GetComponent<Revivable>() != null;
+        bool hasController = player.GetComponent<DownedController>() != null;
         var marker = player.FindDownedMarker();
         bool markerExists = marker != null;
         // The marker must be an instance of OUR registered prefab (not a
@@ -984,8 +984,8 @@ public class E2ERunner : MonoBehaviour {
         bool visualHidden = player.m_visual != null && !player.m_visual.activeSelf;
         bool poofPlayed = PlayerDownedExtensions.LastPoofCount > 0;
         bool poofSmall = PlayerDownedExtensions.LastPoofSourceName.IndexOf("Greyling", StringComparison.OrdinalIgnoreCase) >= 0;
-        Record(T, downed && notDead && hasRevivable && markerExists && markerIsOurPrefab && noRagdolls && poofPlayed && poofSmall && popped,
-            $"downed={downed} notDead={notDead} revivable={hasRevivable} marker={markerExists} " +
+        Record(T, downed && notDead && hasController && markerExists && markerIsOurPrefab && noRagdolls && poofPlayed && poofSmall && popped,
+            $"downed={downed} notDead={notDead} controller={hasController} marker={markerExists} " +
             $"ourPrefab={markerIsOurPrefab} noRagdolls={noRagdolls} visualHidden={visualHidden} " +
             $"poof={PlayerDownedExtensions.LastPoofCount} poofSrc={PlayerDownedExtensions.LastPoofSourceName} popVelY={popVelY:F1}");
     }
@@ -1023,7 +1023,7 @@ public class E2ERunner : MonoBehaviour {
     /// full reconnect: down the player, then simulate the reconnected fresh
     /// character (downed ZDO state gone, health clamped back to full by vanilla
     /// Load) while the persistent green marker survives as an orphan. The
-    /// DisconnectDeathCheck should find the orphan and complete the death: real
+    /// the reconnect-orphan check completes the death: real
     /// tombstone spawned, green marker gone, player dead, no ragdoll.
     /// </summary>
     private IEnumerator Test_DisconnectDeath() {
@@ -1046,16 +1046,14 @@ public class E2ERunner : MonoBehaviour {
         var s = new DownedState(player.m_nview);
         s.Downed = false;
         s.Marker = ZDOID.None;
-        var rev = player.GetComponent<Revivable>();
-        if (rev != null) UnityEngine.Object.Destroy(rev);
         player.SetHealth(player.GetMaxHealth());
         player.m_collider.enabled = true;
         player.m_body.isKinematic = false;
         if (player.m_visual != null) player.m_visual.SetActive(true);
         yield return null;
 
-        // Run the reconnect check (as PlayerOnSpawnedPatch would).
-        player.gameObject.AddComponent<DisconnectDeathCheck>();
+        // Run the reconnect check (as DownedController.Start would on spawn).
+        player.GetComponent<DownedController>()!.RunReconnectCheck();
 
         // Wait for it to find the orphan and kill the player.
         w = 0f;
@@ -1212,7 +1210,6 @@ public class E2ERunner : MonoBehaviour {
         while (waitMove < 3f) { canMove = player.CanMove(); if (canMove) break; waitMove += Time.unscaledDeltaTime; yield return null; }
 
         bool notDowned = !player.IsDowned();
-        bool revivableGone = player.GetComponent<Revivable>() == null;
         bool healthy = player.GetHealth() > 0f;
         bool visualBack = player.m_visual != null && player.m_visual.activeSelf;
         bool collider = player.m_collider != null && player.m_collider.enabled;
@@ -1222,8 +1219,8 @@ public class E2ERunner : MonoBehaviour {
         // The marker must CRUMBLE away (grave despawn effect), not blink out.
         bool crumbled = MarkerState.CrumbleEvents > crumblesBefore;
 
-        Record(T, notDowned && revivableGone && healthy && canMove && visualBack && collider && notKinematic && markerGone && crumbled,
-            $"notDowned={notDowned} revivableGone={revivableGone} hp={player.GetHealth():F0} canMove={canMove} " +
+        Record(T, notDowned && healthy && canMove && visualBack && collider && notKinematic && markerGone && crumbled,
+            $"notDowned={notDowned} hp={player.GetHealth():F0} canMove={canMove} " +
             $"visualBack={visualBack} collider={collider} notKinematic={notKinematic} markerGone={markerGone} crumbled={crumbled}");
     }
 

@@ -43,7 +43,7 @@ public static class PlayerDownedExtensions {
 
     /// <summary>
     /// Revive channel progress 0-1, read from the player's own ZDO (written
-    /// owner-authoritatively by the downed player's <see cref="Revivable"/> as
+    /// owner-authoritatively by the downed player's <see cref="DownedController"/> as
     /// revivers channel). Replicates to every client for the progress circle.
     /// </summary>
     public static float GetReviveProgress(this Player? player) =>
@@ -60,9 +60,9 @@ public static class PlayerDownedExtensions {
     // -------------------------------------------------------------------
 
     /// <summary>
-    /// Enter the downed state: set the replicated flags, spawn the green marker,
-    /// broadcast the poof. All presentation is enforced by <see cref="Revivable"/>,
-    /// which every client attaches in reaction to the replicated flag.
+    /// Enter the downed state: set the replicated flags and spawn the green
+    /// marker. Presentation (hide visual, poof) is handled by <see cref="DownedView"/>
+    /// on every client, reacting to the replicated flag.
     /// </summary>
     public static void EnterDownedState(this Player player) {
         var state = player.State();
@@ -71,11 +71,6 @@ public static class PlayerDownedExtensions {
         state.Downed = true;
         state.DownedTime = (float)ZNet.instance.GetTimeSeconds();
 
-        if (player.GetComponent<Revivable>() == null) {
-            player.gameObject.AddComponent<Revivable>();
-        }
-
-        player.m_nview.InvokeRPC(ZNetView.Everybody, DownedKeys.RpcOnDowned);
         MarkerPrefab.Spawn(player);
 
         player.Message(MessageHud.MessageType.Center,
@@ -85,7 +80,7 @@ public static class PlayerDownedExtensions {
 
     /// <summary>
     /// Revive: clearing the replicated flag IS the state transition -- every
-    /// client's Revivable observes it and restores visual/collider locally (no
+    /// client's DownedView observes it and restores visual/collider locally (no
     /// RPC ordering races).
     /// </summary>
     public static void ReviveFromDowned(this Player player, long reviverId = 0L) {
@@ -153,7 +148,8 @@ public static class PlayerDownedExtensions {
 
     /// <summary>
     /// Play the corpse-vanish "poof" (smoke/particles) at the player on this
-    /// client. Runs from the OnDowned RPC everywhere.
+    /// client. Called by <see cref="DownedView"/> when it observes the player go
+    /// down, so every client plays it locally (no RPC).
     /// </summary>
     public static int PlayDownedPoof(this Player player) {
         var effect = FindRagdollRemoveEffect();

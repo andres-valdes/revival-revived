@@ -8,7 +8,7 @@ namespace ReviveAllies.Components;
 ///  - GREEN: revive channel progress, read from the downed player's replicated
 ///    ZDO, so it shows for the reviver, the downed player, and bystanders.
 ///  - RED: the local downed player's own "hold Use to give up" progress
-///    (<see cref="Revivable.LocalGiveUpFraction"/>), shown only on their screen.
+///    (<see cref="DownedController.LocalGiveUpFraction"/>), shown only on their screen.
 ///    Give-up takes precedence on the dying player's own display.
 /// </summary>
 public class ReviveProgressUI : MonoBehaviour {
@@ -89,7 +89,7 @@ public class ReviveProgressUI : MonoBehaviour {
         // The local downed player holding "give up" shows RED and wins over the
         // revive circle on their own screen.
         var local = Player.m_localPlayer;
-        float giveUp = local != null && local.IsDowned() ? Revivable.LocalGiveUpFraction : 0f;
+        float giveUp = local != null && local.IsDowned() ? DownedController.LocalGiveUpFraction : 0f;
         if (giveUp > 0.01f) {
             SetFill(Mathf.Clamp01(giveUp), GiveUpRed, givingUp: true);
             return;

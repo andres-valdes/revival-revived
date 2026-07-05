@@ -4,55 +4,27 @@ using ReviveAllies.Components;
 namespace ReviveAllies.Patches;
 
 /// <summary>
-/// Intercepts CheckDeath to introduce the downed state between
-/// "health reaches 0" and "OnDeath fires."
+/// Intercepts CheckDeath (owner side) to introduce the downed state between
+/// "health reaches 0" and "OnDeath fires." The decision is delegated to
+/// <see cref="DownedController.HandleZeroHealth"/> so the down/expire logic
+/// lives in one place; this patch is just the hook.
 ///
-/// CheckDeath runs every frame in LateUpdate:
-///   if (!IsDead() && GetHealth() <= 0f) OnDeath();
-///
-/// We prefix it to:
-///   - First time health <= 0: enter downed state, skip OnDeath
-///   - While downed and window active: keep skipping OnDeath
-///   - When window expires: clear downed, let OnDeath proceed naturally
+/// CheckDeath runs every frame in LateUpdate as
+/// <c>if (!IsDead() &amp;&amp; GetHealth() &lt;= 0f) OnDeath();</c>.
 /// </summary>
 [HarmonyPatch(typeof(Character), "CheckDeath")]
 static class CheckDeathPatch {
     static bool Prefix(Character __instance) {
-        // Only intercept for players
-        if (__instance is not Player player) return true;
+        if (__instance is not Player player) return true;      // players only
+        if (!player.m_nview.IsOwner()) return true;            // owner decides
+        if (player.IsDead()) return true;                      // already dead
+        if (player.GetHealth() > 0f) return true;              // nothing to do
 
-        // Let vanilla handle it if not the network owner
-        if (!player.m_nview.IsOwner()) return true;
+        var controller = player.GetComponent<DownedController>();
+        if (controller == null) return true; // no controller yet: vanilla death
 
-        // If already truly dead (s_dead set), don't interfere
-        if (player.IsDead()) return true;
-
-        // If health is fine, nothing to do
-        if (player.GetHealth() > 0f) return true;
-
-        // --- Health is <= 0 and player is not dead ---
-
-        if (player.IsDowned()) {
-            // Already downed -- check if window expired
-            if (player.IsReviveWindowExpired()) {
-                // Window expired: clear downed state, let OnDeath fire.
-                // Defensive: Player.OnDeath dereferences m_lastHit (switch on
-                // m_lastHit.m_hitType) before spawning the tombstone, so a death
-                // with no recorded hit would NRE and skip the grave. In normal
-                // play the downing damage sets m_lastHit; guard the edge case.
-                if (player.m_lastHit == null) {
-                    player.m_lastHit = new HitData { m_hitType = HitData.HitType.Self };
-                }
-                player.ExpireDownedState();
-                return true; // proceed to OnDeath
-            }
-
-            // Still within window -- suppress OnDeath
-            return false;
-        }
-
-        // Not downed yet -- enter downed state instead of dying
-        player.EnterDownedState();
-        return false; // suppress OnDeath
+        // false -> suppress vanilla death (entering/holding downed);
+        // true  -> allow vanilla OnDeath (the window expired).
+        return controller.HandleZeroHealth();
     }
 }

@@ -5,29 +5,19 @@ using UnityEngine;
 namespace ReviveAllies.Patches;
 
 /// <summary>
-/// Registers our custom RPCs on Player and restores downed state on late join.
+/// Attach the downed-state components to every Player, once. They are always
+/// present and gate on state internally: <see cref="DownedController"/> is the
+/// owner-side authority (state machine + RPC handler), <see cref="DownedView"/>
+/// is the all-clients presentation.
 /// </summary>
 [HarmonyPatch(typeof(Player), "Awake")]
 static class PlayerAwakePatch {
     static void Postfix(Player __instance) {
-        var nview = __instance.m_nview;
-
-        // Transient poof effect on down; all state is ZDO-driven via Revivable.
-        nview.Register(DownedKeys.RpcOnDowned, (long sender) => {
-            __instance.PlayDownedPoof();
-        });
-
-        // Reviver -> owner: "I am channeling a revive." The owner's Revivable
-        // accumulates progress and revives at completion (owner-authoritative).
-        nview.Register(DownedKeys.RpcChannel, (long sender) => {
-            if (!nview.IsOwner()) return;
-            __instance.GetComponent<Revivable>()?.ChannelPing(sender);
-        });
-
-        // Late join / streamed-in-while-downed: the component reflects the
-        // replicated state; everything else happens in its Update.
-        if (__instance.IsDowned() && __instance.GetComponent<Revivable>() == null) {
-            __instance.gameObject.AddComponent<Revivable>();
+        if (__instance.GetComponent<DownedController>() == null) {
+            __instance.gameObject.AddComponent<DownedController>();
+        }
+        if (__instance.GetComponent<DownedView>() == null) {
+            __instance.gameObject.AddComponent<DownedView>();
         }
     }
 }
@@ -61,17 +51,11 @@ static class CharacterUpdateMotionPatch {
 }
 
 /// <summary>
-/// ZDO-driven component attach: any player instance whose replicated ZDO says
-/// downed gets a <see cref="Revivable"/>, which owns all downed-state
-/// presentation and enforcement (and tears itself down when the flag clears).
+/// Keep a dead player's corpse inert until respawn.
 /// </summary>
 [HarmonyPatch(typeof(Player), "LateUpdate")]
 static class PlayerLateUpdatePatch {
     static void Postfix(Player __instance) {
-        if (__instance.IsDowned() && __instance.GetComponent<Revivable>() == null) {
-            __instance.gameObject.AddComponent<Revivable>();
-        }
-
         // Dead corpse (we suppress the ragdoll, so the invisible player object
         // lingers until respawn): keep it inert on every client -- no collider
         // to bump into, no physics drift. s_dead is replicated, so remotes see
@@ -133,19 +117,12 @@ static class EnemyHudHideDownedPatch {
 }
 
 /// <summary>
-/// On spawn, attach the disconnect-death check to the local player so that a
-/// player who disconnected while downed dies on reconnect (see
-/// <see cref="DisconnectDeathCheck"/>).
+/// Make sure the revive progress circle exists once we're in a world. (The
+/// reconnect-orphan death check lives on <see cref="DownedController"/>.)
 /// </summary>
 [HarmonyPatch(typeof(Player), "OnSpawned")]
 static class PlayerOnSpawnedPatch {
     static void Postfix(Player __instance) {
-        if (__instance == Player.m_localPlayer
-            && __instance.m_nview != null && __instance.m_nview.IsValid() && __instance.m_nview.IsOwner()
-            && __instance.GetComponent<DisconnectDeathCheck>() == null) {
-            __instance.gameObject.AddComponent<DisconnectDeathCheck>();
-        }
-        // Make sure the revive progress circle exists once we're in a world.
         ReviveProgressUI.Ensure();
     }
 }
