@@ -75,7 +75,8 @@ public static class PlayerDownedExtensions {
         player.m_nview.InvokeRPC(ZNetView.Everybody, DownedKeys.RpcOnDowned);
         DownedMarker.Spawn(player);
 
-        player.Message(MessageHud.MessageType.Center, "You are downed!");
+        player.Message(MessageHud.MessageType.Center,
+            Localization.instance.Localize("You are downed!\nHold [<color=#ff5555><b>$KEY_Use</b></color>] to give up"));
         Plugin.Logger.LogInfo($"{player.GetPlayerName()} entered downed state (owner)");
     }
 

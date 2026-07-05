@@ -860,6 +860,49 @@ public class E2ERunner : MonoBehaviour {
         yield return StartCoroutine(Test_ExpiryKills());
         yield return StartCoroutine(WaitForAlivePlayer());
         yield return StartCoroutine(Test_EmptyInventoryCrumbles());
+        yield return StartCoroutine(WaitForAlivePlayer());
+        yield return StartCoroutine(Test_GiveUp());
+    }
+
+    /// <summary>
+    /// Hold-to-give-up: the downed player holds Use, the progress circle turns
+    /// red, and at completion they die for real (window ends, real grave spawns).
+    /// </summary>
+    private IEnumerator Test_GiveUp() {
+        const string T = "give_up_kills";
+        var player = Player.m_localPlayer;
+        if (player == null || player.IsDead()) { Record(T, false, "no alive player"); yield break; }
+        player.SetHealth(player.GetMaxHealth());
+        GiveTestItem(player); // so a real grave spawns on death
+        yield return null;
+
+        player.SetHealth(0f);
+        float w = 0f;
+        while (w < 5f && !player.IsDowned()) { w += Time.unscaledDeltaTime; yield return null; }
+        if (!player.IsDowned()) { Record(T, false, "could not down"); yield break; }
+        yield return new WaitForSecondsRealtime(0.5f);
+
+        // Hold give-up until death (well beyond the 2s hold).
+        w = 0f;
+        float maxFrac = 0f;
+        bool sawRed = false;
+        while (w < 6f && !player.IsDead()) {
+            player.GetComponent<Revivable>()?.SimulateGiveUpHold();
+            maxFrac = Mathf.Max(maxFrac, Revivable.LocalGiveUpFraction);
+            if (ReviveProgressUI.Visible && ReviveProgressUI.GivingUp) sawRed = true;
+            w += Time.unscaledDeltaTime;
+            yield return null;
+        }
+        yield return new WaitForSecondsRealtime(0.5f);
+
+        bool dead = player.IsDead();
+        bool notDowned = !player.IsDowned();
+        bool realTombstone = FindRealGraveNear(player.transform.position, 999f) != null;
+        bool fractionReset = Revivable.LocalGiveUpFraction <= 0.01f;
+
+        Record(T, dead && notDowned && sawRed && maxFrac > 0.5f && realTombstone && fractionReset,
+            $"dead={dead} notDowned={notDowned} sawRed={sawRed} maxFrac={maxFrac:F2} " +
+            $"realTombstone={realTombstone} fractionReset={fractionReset}");
     }
 
     private IEnumerator Test_LethalDamageDowns() {

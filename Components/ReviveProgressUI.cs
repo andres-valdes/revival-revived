@@ -4,21 +4,25 @@ using UnityEngine.UI;
 namespace ReviveAllies.Components;
 
 /// <summary>
-/// Radial progress circle shown while a revive is being channeled (Hold mode).
-///
-/// ZDO-driven like the rest of the mod: every frame it scans the loaded players
-/// for one that is downed with a non-zero replicated
-/// <see cref="DownedMarker.View.ReviveProgress"/> and shows that progress. Because
-/// the progress field replicates, the circle appears for the reviver, the
-/// downed player, and any bystander -- no RPC plumbing.
+/// Radial progress circle below the crosshair. Two things drive it:
+///  - GREEN: revive channel progress, read from the downed player's replicated
+///    ZDO, so it shows for the reviver, the downed player, and bystanders.
+///  - RED: the local downed player's own "hold Use to give up" progress
+///    (<see cref="Revivable.LocalGiveUpFraction"/>), shown only on their screen.
+///    Give-up takes precedence on the dying player's own display.
 /// </summary>
 public class ReviveProgressUI : MonoBehaviour {
     private static ReviveProgressUI? s_instance;
+
+    /// <summary>Give-up accent (red), distinct from the revive green.</summary>
+    public static readonly Color GiveUpRed = new(0.9f, 0.15f, 0.15f);
 
     /// <summary>Visible this frame (test hook).</summary>
     public static bool Visible { get; private set; }
     /// <summary>Current fill 0-1 (test hook).</summary>
     public static float Fill { get; private set; }
+    /// <summary>True when the circle is showing the red give-up progress (test hook).</summary>
+    public static bool GivingUp { get; private set; }
 
     private GameObject? m_root;
     private Image? m_bg;
@@ -82,22 +86,34 @@ public class ReviveProgressUI : MonoBehaviour {
     }
 
     private void Update() {
+        // The local downed player holding "give up" shows RED and wins over the
+        // revive circle on their own screen.
+        var local = Player.m_localPlayer;
+        float giveUp = local != null && local.IsDowned() ? Revivable.LocalGiveUpFraction : 0f;
+        if (giveUp > 0.01f) {
+            SetFill(Mathf.Clamp01(giveUp), GiveUpRed, givingUp: true);
+            return;
+        }
+
+        // Otherwise: GREEN revive channel progress for any downed player.
         float progress = 0f;
-        // Any downed player with channel progress (replicated ZDO) drives the UI.
         foreach (var p in Player.GetAllPlayers()) {
             if (p == null || !p.IsDowned()) continue;
             progress = Mathf.Max(progress, p.GetReviveProgress());
         }
+        SetFill(Mathf.Clamp01(progress), DownedMarker.ReviveGreen, givingUp: false);
+    }
 
-        // Never over-full: whatever replicates in, the circle shows at most a
-        // complete ring.
-        progress = Mathf.Clamp01(progress);
-
-        bool show = progress > 0.01f;
+    private void SetFill(float amount, Color color, bool givingUp) {
+        bool show = amount > 0.01f;
         if (m_root != null && m_root.activeSelf != show) m_root.SetActive(show);
-        if (show && m_fill != null) m_fill.fillAmount = progress;
+        if (show && m_fill != null) {
+            m_fill.fillAmount = amount;
+            m_fill.color = color;
+        }
 
         Visible = show;
-        Fill = show ? progress : 0f;
+        Fill = show ? amount : 0f;
+        GivingUp = show && givingUp;
     }
 }

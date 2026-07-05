@@ -28,8 +28,20 @@ public class Revivable : MonoBehaviour {
     /// <summary>Accumulated channel time in seconds (owner only).</summary>
     private float m_progress;
 
+    /// <summary>Accumulated "give up" hold time in seconds (local downed player only).</summary>
+    private float m_giveUpProgress;
+    private bool m_simulateGiveUp;
+
     /// <summary>Max gap between channel pings before the window resumes draining and progress decays.</summary>
     private const float ChannelPingTimeout = 0.5f;
+    /// <summary>How long the downed player must hold Use to give up and die early.</summary>
+    private const float GiveUpDuration = 2f;
+
+    /// <summary>
+    /// The local downed player's give-up hold, 0-1 (0 when not downed or not
+    /// holding). Read by <see cref="ReviveProgressUI"/> to draw the red circle.
+    /// </summary>
+    public static float LocalGiveUpFraction { get; private set; }
 
     public string PlayerName => m_player != null ? m_player.GetPlayerName() : "Viking";
     public float RemainingTime => m_player != null ? m_player.GetDownedRemainingTime() : 0f;
@@ -45,6 +57,7 @@ public class Revivable : MonoBehaviour {
         // ZDO-driven teardown: the flag cleared (revive or expiry), restore this
         // client's local changes and go away.
         if (!m_player.IsDowned()) {
+            if (m_player == Player.m_localPlayer) LocalGiveUpFraction = 0f;
             Restore();
             Destroy(this);
             return;
@@ -63,6 +76,9 @@ public class Revivable : MonoBehaviour {
 
         m_player.m_body.isKinematic = true;
 
+        // The downed player can hold Use to give up (end the window early).
+        UpdateGiveUp();
+
         // Expiry-to-death is owned by the CheckDeath patch; keep health at 0 so
         // it fires once the window has elapsed.
         if (m_player.IsReviveWindowExpired()) {
@@ -71,6 +87,52 @@ public class Revivable : MonoBehaviour {
         }
 
         UpdateReviveChannel();
+    }
+
+    /// <summary>
+    /// Give up: the downed player (only they can, only for themselves) holds Use
+    /// to fill a red circle and, at completion, ends their own revive window --
+    /// forcing the normal expiry -> death path. Releasing decays the progress.
+    /// </summary>
+    private void UpdateGiveUp() {
+        if (m_player != Player.m_localPlayer) return; // only you give up on yourself
+
+        if (GiveUpHeld()) {
+            m_giveUpProgress += Time.deltaTime;
+            if (m_giveUpProgress >= GiveUpDuration) {
+                GiveUp();
+                return;
+            }
+        } else if (m_giveUpProgress > 0f) {
+            m_giveUpProgress = Mathf.Max(0f, m_giveUpProgress - Time.deltaTime * 2f);
+        }
+        LocalGiveUpFraction = Mathf.Clamp01(m_giveUpProgress / GiveUpDuration);
+    }
+
+    private void GiveUp() {
+        m_giveUpProgress = 0f;
+        LocalGiveUpFraction = 0f;
+        // End the window now: expiring the clock routes through the same
+        // expiry -> death path (marker becomes the real grave).
+        m_nview!.GetZDO().Set(DownedKeys.DownedTime,
+            (float)ZNet.instance.GetTimeSeconds() - Plugin.ReviveWindow - 1f);
+        if (m_player!.GetHealth() > 0f) m_player.SetHealth(0f);
+        Plugin.Logger.LogInfo($"{m_player.GetPlayerName()} gave up");
+    }
+
+    /// <summary>Is the Use key held for give-up (ignoring menus/chat/console)?</summary>
+    private bool GiveUpHeld() {
+        if (m_simulateGiveUp) { m_simulateGiveUp = false; return true; } // test hook
+        if (Chat.instance != null && Chat.instance.HasFocus()) return false;
+        if (Console.IsVisible() || Menu.IsVisible() || InventoryGui.IsVisible() || TextInput.IsVisible()) return false;
+        return ZInput.GetButton("Use") || ZInput.GetButton("JoyUse");
+    }
+
+    /// <summary>Test hook: one frame of give-up input from the local downed player.</summary>
+    public void SimulateGiveUpHold() => m_simulateGiveUp = true;
+
+    private void OnDestroy() {
+        if (m_player == Player.m_localPlayer) LocalGiveUpFraction = 0f;
     }
 
     /// <summary>
