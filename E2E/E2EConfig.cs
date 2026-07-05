@@ -26,6 +26,8 @@ public static class E2EConfig {
     public static bool IsVanishScenario => Scenario == "vanish";
     /// <summary>Stress: many down/revive cycles with realistic held input, watching for leaked marker ZDOs.</summary>
     public static bool IsReviveLoopScenario => Scenario == "reviveloop";
+    /// <summary>Host sets distinctive revive config; the client must adopt it (server-authoritative).</summary>
+    public static bool IsConfigSyncScenario => Scenario == "configsync";
 
     /// <summary>Which role goes down in the revive loop ("host" or "client"); the other revives.</summary>
     public static string LoopDownRole => (Environment.GetEnvironmentVariable("RR_E2E_LOOP_DOWN") ?? "host").ToLowerInvariant();

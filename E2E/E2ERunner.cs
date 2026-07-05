@@ -79,6 +79,15 @@ public class E2ERunner : MonoBehaviour {
         if (player == null) { Record("host_spawn", false, "no local player"); yield break; }
         Record("host_spawn", true, $"name={player.GetPlayerName()}");
 
+        // Config-sync scenario: set a distinctive authoritative config on the
+        // host BEFORE the client connects, so the connect-time push carries it.
+        if (E2EConfig.IsConfigSyncScenario) {
+            Plugin.ReviveHoldTimeCfg.Value = 7f;
+            Plugin.ReviveModeCfg.Value = ReviveModeType.Press;
+            Plugin.BroadcastConfig();
+            Log("E2E[host]: configsync -- authoritative hold=7 mode=Press");
+        }
+
         // Wait for the client to connect and its player to appear.
         Log("E2E[host]: waiting for a client to connect...");
         float waited = 0f;
@@ -101,6 +110,15 @@ public class E2ERunner : MonoBehaviour {
             Log("E2E[host]: rejoin scenario -- idling as server");
             yield return new WaitForSecondsRealtime(160f);
             Record("host_idle_complete", true, "server stayed up for client rejoin");
+            yield break;
+        }
+
+        // Config-sync scenario: idle while the client verifies it adopted our
+        // authoritative config.
+        if (E2EConfig.IsConfigSyncScenario) {
+            Log("E2E[host]: configsync -- idling while client verifies");
+            yield return new WaitForSecondsRealtime(30f);
+            Record("host_idle_complete", true, "server stayed up for configsync");
             yield break;
         }
 
@@ -263,6 +281,11 @@ public class E2ERunner : MonoBehaviour {
         if (E2EConfig.IsReviveLoopScenario) {
             if (E2EConfig.LoopDownRole == "client") yield return StartCoroutine(RunLoopVictim(me));
             else yield return StartCoroutine(RunLoopReviver(me));
+            yield break;
+        }
+
+        if (E2EConfig.IsConfigSyncScenario) {
+            yield return StartCoroutine(RunClientConfigSync());
             yield break;
         }
 
@@ -447,6 +470,33 @@ public class E2ERunner : MonoBehaviour {
         bool notDowned = Player.m_localPlayer == null || !Player.m_localPlayer.IsDowned();
         Record("reconnect_downed_dies", diedOnReconnect && markerGone && notDowned,
             $"died={diedOnReconnect} markerGone={markerGone} realTombstone={realTombstone} notDowned={notDowned}");
+    }
+
+    /// <summary>
+    /// Config sync: the host set hold=7 / mode=Press authoritatively. This
+    /// client sets DIFFERENT local values (hold=2 / mode=Hold) and must end up
+    /// reporting the host's -- proving the settings are server-authoritative and
+    /// the client's own config is ignored for these.
+    /// </summary>
+    private IEnumerator RunClientConfigSync() {
+        // Deliberately-different local config.
+        Plugin.ReviveHoldTimeCfg.Value = 2f;
+        Plugin.ReviveModeCfg.Value = ReviveModeType.Hold;
+        Log("E2E[client]: configsync -- local hold=2 mode=Hold, expecting server hold=7 mode=Press");
+
+        float w = 0f;
+        bool adopted = false;
+        while (w < 20f && !adopted) {
+            adopted = Mathf.Abs(Plugin.ReviveDuration - 7f) < 0.01f && Plugin.RevivePressMode;
+            w += Time.unscaledDeltaTime;
+            yield return null;
+        }
+
+        bool durationFromServer = Mathf.Abs(Plugin.ReviveDuration - 7f) < 0.01f;
+        bool modeFromServer = Plugin.RevivePressMode; // host is Press; local was Hold
+        Record("client_adopts_server_config", durationFromServer && modeFromServer,
+            $"durationFromServer={durationFromServer} (dur={Plugin.ReviveDuration:F1}, local was 2) " +
+            $"modeFromServer={modeFromServer} (press; local was hold)");
     }
 
     // =====================================================================
