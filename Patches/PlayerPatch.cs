@@ -6,15 +6,31 @@ namespace ReviveAllies.Patches;
 
 /// <summary>
 /// Attach the downed-state components to every Player, once. They are always
-/// present and gate on state internally: <see cref="DownedController"/> is the
+/// present and gate on state internally: <see cref="DownedStateMachine"/> is the
 /// owner-side authority (state machine + RPC handler), <see cref="DownedView"/>
 /// is the all-clients presentation.
 /// </summary>
 [HarmonyPatch(typeof(Player), "Awake")]
 static class PlayerAwakePatch {
     static void Postfix(Player __instance) {
-        if (__instance.GetComponent<DownedController>() == null) {
-            __instance.gameObject.AddComponent<DownedController>();
+        // The downed machine's collaborators (states pull these off the Player).
+        if (__instance.GetComponent<GiveUp>() == null) {
+            __instance.gameObject.AddComponent<GiveUp>();
+        }
+        if (__instance.GetComponent<ChannelSignal>() == null) {
+            __instance.gameObject.AddComponent<ChannelSignal>();
+        }
+        if (__instance.GetComponent<DownedStateMachine>() == null) {
+            __instance.gameObject.AddComponent<DownedStateMachine>();
+        }
+        if (__instance.GetComponent<ReviveRequest>() == null) {
+            __instance.gameObject.AddComponent<ReviveRequest>();
+        }
+        if (__instance.GetComponent<ReviverStateMachine>() == null) {
+            __instance.gameObject.AddComponent<ReviverStateMachine>();
+        }
+        if (__instance.GetComponent<ReconnectDeathCheck>() == null) {
+            __instance.gameObject.AddComponent<ReconnectDeathCheck>();
         }
         if (__instance.GetComponent<DownedView>() == null) {
             __instance.gameObject.AddComponent<DownedView>();
@@ -116,13 +132,3 @@ static class EnemyHudHideDownedPatch {
     }
 }
 
-/// <summary>
-/// Make sure the revive progress circle exists once we're in a world. (The
-/// reconnect-orphan death check lives on <see cref="DownedController"/>.)
-/// </summary>
-[HarmonyPatch(typeof(Player), "OnSpawned")]
-static class PlayerOnSpawnedPatch {
-    static void Postfix(Player __instance) {
-        ReviveProgressUI.Ensure();
-    }
-}

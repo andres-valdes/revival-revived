@@ -16,13 +16,16 @@ public static class PlayerDownedExtensions {
     // -------------------------------------------------------------------
 
     /// <summary>The player's downed-state view (caller must ensure the nview is valid).</summary>
-    public static DownedState State(this Player player) => new(player.m_nview);
+    public static DownedStateMachineView State(this Player player) => new(player.m_nview);
+
+    /// <summary>The player's death-to-grave handoff view (caller must ensure the nview is valid).</summary>
+    public static GraveReplaceView GraveReplace(this Player player) => new(player.m_nview);
 
     /// <summary>The player's downed-state view, guarded by the usual validity check.</summary>
-    public static bool TryState(this Player? player, out DownedState state) {
+    public static bool TryState(this Player? player, out DownedStateMachineView state) {
         var nview = player?.m_nview;
         if (nview == null || !nview.IsValid()) { state = default; return false; }
-        state = new DownedState(nview);
+        state = new DownedStateMachineView(nview);
         return true;
     }
 
@@ -33,21 +36,47 @@ public static class PlayerDownedExtensions {
         player.TryState(out var s) && s.Downed;
 
     public static bool IsReviveWindowExpired(this Player player) =>
-        (float)ZNet.instance.GetTimeSeconds() - player.State().DownedTime > Plugin.ReviveWindow;
+        player.NonChanneledDownedElapsed() > Plugin.ReviveWindow;
 
     /// <summary>Seconds left in the revive window.</summary>
     public static float GetDownedRemainingTime(this Player? player) {
-        if (!player.TryState(out var s)) return 0f;
-        return Mathf.Max(0f, Plugin.ReviveWindow - ((float)ZNet.instance.GetTimeSeconds() - s.DownedTime));
+        if (!player.TryState(out _)) return 0f;
+        return Mathf.Max(0f, Plugin.ReviveWindow - player.NonChanneledDownedElapsed());
     }
 
     /// <summary>
-    /// Revive channel progress 0-1, read from the player's own ZDO (written
-    /// owner-authoritatively by the downed player's <see cref="DownedController"/> as
-    /// revivers channel). Replicates to every client for the progress circle.
+    /// Downed time that counts against the window: real elapsed minus channeling.
+    /// Closed channel intervals are folded into DownedTime (shifted forward on
+    /// channel stop by <see cref="ReviveChannelDecayingProgress"/>); the currently
+    /// OPEN interval is subtracted here from the marker's anchor, so the window
+    /// stays paused for the whole time a revive is being channeled.
     /// </summary>
-    public static float GetReviveProgress(this Player? player) =>
-        player.TryState(out var s) ? s.ReviveProgress : 0f;
+    private static float NonChanneledDownedElapsed(this Player? player) {
+        if (!player.TryState(out var s)) return 0f;
+        float elapsed = (float)ZNet.instance.GetTimeSeconds() - s.DownedTime;
+        return Mathf.Max(0f, elapsed - player.OpenChannelSeconds());
+    }
+
+    /// <summary>Seconds the current (open) revive channel has been running, 0 if none.</summary>
+    private static float OpenChannelSeconds(this Player? player) {
+        var marker = player.FindDownedMarker();
+        var nview = marker != null ? marker.GetComponent<ZNetView>() : null;
+        if (nview == null || !nview.IsValid()) return 0f;
+        var channel = new ReviveChannelDecayingProgressView(nview);
+        if (!channel.Channeling) return 0f;
+        return Mathf.Max(0f, (float)ZNet.instance.GetTimeSeconds() - channel.AnchorTime);
+    }
+
+    /// <summary>
+    /// Revive channel progress 0-1, computed locally from the marker's replicated
+    /// channel anchor (see <see cref="ReviveChannelDecayingProgress"/>). 0 when the
+    /// marker isn't present.
+    /// </summary>
+    public static float GetReviveProgress(this Player? player) {
+        var marker = player.FindDownedMarker();
+        var timer = marker != null ? marker.GetComponent<ReviveChannelDecayingProgress>() : null;
+        return timer != null ? timer.Fraction : 0f;
+    }
 
     /// <summary>The green marker tombstone linked to this player, on any client.</summary>
     public static GameObject? FindDownedMarker(this Player? player) {
@@ -65,9 +94,10 @@ public static class PlayerDownedExtensions {
     /// on every client, reacting to the replicated flag.
     /// </summary>
     public static void EnterDownedState(this Player player) {
+        var grave = player.GraveReplace();
+        grave.Pending = false; // stale replace must not leak in
+
         var state = player.State();
-        state.GraveReplacePending = false; // stale replace must not leak in
-        state.ReviveProgress = 0f;         // fresh channel
         state.Downed = true;
         state.DownedTime = (float)ZNet.instance.GetTimeSeconds();
 
@@ -96,7 +126,7 @@ public static class PlayerDownedExtensions {
         player.SetHealth(Mathf.Max(player.GetMaxHealth() * Plugin.ReviveHealthFraction, 1f));
 
         // The marker crumbles away like an emptied grave (not an instant blink).
-        MarkerState.CrumbleLinked(player.m_nview);
+        DownedMarker.CrumbleLinked(player.m_nview);
 
         player.Message(MessageHud.MessageType.Center, "You have been revived!");
         Plugin.Logger.LogInfo($"{player.GetPlayerName()} was revived by {ReviverName(reviverId)}");
@@ -120,8 +150,9 @@ public static class PlayerDownedExtensions {
         if (marker != null) {
             // Ask the upcoming real grave to replace the marker in place (we own
             // this player ZDO; the grave-spawn patch consumes it).
-            state.GraveReplacePending = true;
-            state.GraveReplacePos = marker.transform.position;
+            var grave = player.GraveReplace();
+            grave.Pending = true;
+            grave.Pos = marker.transform.position;
         }
 
         Plugin.Logger.LogInfo($"{player.GetPlayerName()} revive window expired, proceeding to death");

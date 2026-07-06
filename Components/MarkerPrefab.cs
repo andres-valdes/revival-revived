@@ -6,7 +6,7 @@ namespace ReviveAllies.Components;
 /// The revive-marker networked prefab: builds and registers it (once, from the
 /// vanilla tombstone), spawns instances for downed players, and finds orphans by
 /// stable PlayerID. Purely the factory/registry -- the marker's data lives in
-/// <see cref="MarkerState"/> and its visuals in <see cref="DownedMarker"/>.
+/// <see cref="DownedMarkerView"/> and its visuals in <see cref="DownedMarker"/>.
 /// </summary>
 public static class MarkerPrefab {
     /// <summary>Networked prefab name; must be identical (and registered) on every client.</summary>
@@ -63,7 +63,8 @@ public static class MarkerPrefab {
 
             // Our behaviour, baked into the prefab.
             template.AddComponent<DownedMarker>();
-            template.AddComponent<ReviveInteractable>();
+            template.AddComponent<ReviveChannelDecayingProgress>();
+            template.AddComponent<Revivable>();
 
             s_prefabTemplate = template;
             Plugin.Logger.LogInfo($"MarkerPrefab: built prefab '{PrefabName}' from '{original.name}'");
@@ -130,14 +131,14 @@ public static class MarkerPrefab {
             return;
         }
 
-        var marker = new MarkerState(nview);
+        var marker = new DownedMarkerView(nview);
         marker.IsMarker = true;                                   // distinguishes from real graves
         marker.LinkedPlayer = player.m_nview.GetZDO().m_uid;
         marker.OwnerPlayerId = player.GetPlayerID();              // stable across rejoin
         marker.OwnerName = player.GetPlayerName();                // world text
         marker.DownedTime = (float)ZNet.instance.GetTimeSeconds();// fallback clock
 
-        var state = new DownedState(player.m_nview);
+        var state = new DownedStateMachineView(player.m_nview);
         state.Marker = nview.GetZDO().m_uid;
 
         // Vanilla tombstone "drop-in" pop (TombStone.Setup normally does this;
@@ -158,7 +159,7 @@ public static class MarkerPrefab {
         foreach (var dm in Object.FindObjectsOfType<DownedMarker>()) {
             var nv = dm.GetComponent<ZNetView>();
             if (nv == null || !nv.IsValid()) continue;
-            var marker = new MarkerState(nv);
+            var marker = new DownedMarkerView(nv);
             // A replaced marker is a lame-duck prop awaiting destruction, not
             // evidence of a downed player (it must not re-trigger the
             // reconnect-death check while it lingers).

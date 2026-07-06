@@ -2,7 +2,7 @@ namespace ReviveAllies.Components;
 
 /// <summary>
 /// Routed-RPC names for the downed/revive feature. (ZDO field keys live with
-/// the views that own them: <see cref="DownedState"/> and <see cref="MarkerState"/>.)
+/// the views that own them: <see cref="DownedStateMachineView"/> and <see cref="DownedMarkerView"/>.)
 /// </summary>
 public static class DownedKeys {
     /// <summary>Reviver -> owner: "I am channeling a revive." The owner accumulates progress and revives itself.</summary>

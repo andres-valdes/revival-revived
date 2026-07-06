@@ -3,24 +3,14 @@ using UnityEngine;
 namespace ReviveAllies.Components;
 
 /// <summary>
-/// Added to the downed marker. Implements Hoverable/Interactable and forwards
-/// the reviver's intent to the downed player's owner.
-///
-/// The revive is <em>owner-authoritative</em>: while a reviver holds (or presses
-/// in press mode) the interact key on the marker, we send a <see cref="DownedKeys.RpcChannel"/>
-/// ping routed to the downed player's owner. The owner accumulates the progress
-/// on its own ZDO, publishes it (so every client's UI sees it replicate in), and
-/// revives itself at completion. This component never writes any ZDO -- so it
-/// cannot claim the marker, fight its owner, or leave stale progress behind.
-/// The cost is that the reviver's progress circle lags by one round-trip, which
-/// is correct.
+/// The marker's interaction surface: Hoverable/Interactable only. It shows the
+/// revive hover prompt and, on interact, forwards the intent to the reviving
+/// player's <see cref="ReviveRequest"/> -- it is NOT part of any state machine
+/// and never writes a ZDO. The reviver machine (on the Player) owns the channeling
+/// behaviour.
 /// </summary>
-public class ReviveInteractable : MonoBehaviour, Hoverable, Interactable {
+public class Revivable : MonoBehaviour, Hoverable, Interactable {
     private ZNetView? m_nview;
-    private float m_lastPingTime = -999f;
-
-    /// <summary>Cadence of channel pings to the downed player's owner (bounds RPC rate regardless of caller frequency).</summary>
-    private const float PingInterval = 0.2f;
 
     private void Awake() {
         m_nview = GetComponentInParent<ZNetView>();
@@ -29,7 +19,7 @@ public class ReviveInteractable : MonoBehaviour, Hoverable, Interactable {
     /// <summary>The character ZDOID this marker is linked to, or None.</summary>
     private ZDOID LinkedPlayerZdoId() =>
         m_nview != null && m_nview.IsValid()
-            ? new MarkerState(m_nview).LinkedPlayer
+            ? new DownedMarkerView(m_nview).LinkedPlayer
             : ZDOID.None;
 
     /// <summary>The downed player linked to this marker, or null.</summary>
@@ -44,19 +34,9 @@ public class ReviveInteractable : MonoBehaviour, Hoverable, Interactable {
     }
 
     /// <summary>
-    /// Tell the downed player's owner we are channeling (throttled). The owner
-    /// does everything else.
-    /// </summary>
-    private void SendChannelPing(Player downed) {
-        if (Time.time - m_lastPingTime < PingInterval) return;
-        m_lastPingTime = Time.time;
-        downed.m_nview.InvokeRPC(DownedKeys.RpcChannel);
-    }
-
-    /// <summary>
-    /// True when the linked player's session ZDO no longer exists at all --
-    /// they disconnected while downed. (Distinct from the ZDO existing but the
-    /// instance being unloaded by distance, which is not a disconnect.)
+    /// True when the linked player's session ZDO no longer exists at all -- they
+    /// disconnected while downed. (Distinct from the ZDO existing but the instance
+    /// being unloaded by distance, which is not a disconnect.)
     /// </summary>
     private bool LinkedPlayerDisconnected() {
         var playerZdoId = LinkedPlayerZdoId();
@@ -67,7 +47,7 @@ public class ReviveInteractable : MonoBehaviour, Hoverable, Interactable {
     /// <summary>The downed player's name from the marker ZDO, or "Viking".</summary>
     private string OwnerName() {
         if (m_nview == null || !m_nview.IsValid()) return "Viking";
-        var name = new MarkerState(m_nview).OwnerName;
+        var name = new DownedMarkerView(m_nview).OwnerName;
         return string.IsNullOrEmpty(name) ? "Viking" : name;
     }
 
@@ -105,14 +85,21 @@ public class ReviveInteractable : MonoBehaviour, Hoverable, Interactable {
         var player = FindDownedPlayer();
         if (player == null || reviver == player) return false;
 
-        SendChannelPing(player);
+        reviver.GetComponent<ReviveRequest>()?.Request(player); // the reviver machine channels
         return true;
     }
 
-    /// <summary>Test hook: one frame of channel input from a would-be reviver.</summary>
+    /// <summary>
+    /// Test hook: one frame of channel input from the local player as would-be
+    /// reviver. Self allowed here (single-process tests revive the local downed
+    /// player); the real Interact path forbids reviving yourself.
+    /// </summary>
     public void SimulateHold() {
         var player = FindDownedPlayer();
-        if (player != null) SendChannelPing(player);
+        var me = Player.m_localPlayer;
+        if (player != null && me != null) {
+            me.GetComponent<ReviveRequest>()?.Request(player);
+        }
     }
 
     public bool UseItem(Humanoid user, ItemDrop.ItemData item) {

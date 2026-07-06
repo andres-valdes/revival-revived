@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.2
+
+- Fixed a bug where enemies would continue to aggro downed players.
+- Revive progress builds up smoothly.
+
 ## 0.3.1
 
 Internal cleanup of the downed/revive logic, with one gameplay tweak: while you
@@ -8,7 +13,8 @@ you let go. Holding "give up" now reliably means you want to die.
 
 ## 0.3.0
 
-First release under the ReviveAllies name.
+The third minor release of ReviveAllies, and a full rewrite of the mod, updated
+for current Valheim versions.
 
 - Give up: hold your own "Use" key (E) while downed to end it early — a red
   circle fills and you die immediately instead of waiting out the window.

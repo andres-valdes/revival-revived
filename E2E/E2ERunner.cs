@@ -219,7 +219,7 @@ public class E2ERunner : MonoBehaviour {
         // Keep "holding" a moment longer against the orphan -- must not throw,
         // must not revive anyone, and the local hold must decay to zero.
         var orphan = MarkerPrefab.FindFor(downedPid);
-        var orphanInteractable = orphan != null ? orphan.GetComponentInChildren<ReviveInteractable>() : null;
+        var orphanInteractable = orphan != null ? orphan.GetComponentInChildren<Revivable>() : null;
         w = 0f;
         while (w < 1.5f) {
             orphanInteractable?.Interact(me, hold: true, alt: false);
@@ -233,7 +233,7 @@ public class E2ERunner : MonoBehaviour {
         string hover = "";
         bool interactInert = true;
         if (orphan != null) {
-            var inter = orphan.GetComponentInChildren<ReviveInteractable>();
+            var inter = orphan.GetComponentInChildren<Revivable>();
             if (inter != null) {
                 // The linked player is gone: interact must be a no-op (there is
                 // no revive target, so no channel ping is sent to anyone).
@@ -334,7 +334,7 @@ public class E2ERunner : MonoBehaviour {
             // reads as the circle overflowing past 100% and re-filling.
             if (prog >= 0.99f) sawFull = true;
             else if (sawFull && prog > 0.05f && prog < 0.9f) reboundAfterFull = true;
-            if (ReviveProgressUI.Visible) { uiSeen = true; maxUiFill = Mathf.Max(maxUiFill, ReviveProgressUI.Fill); }
+            if (ProgressUI.Visible) { uiSeen = true; maxUiFill = Mathf.Max(maxUiFill, ProgressUI.Fill); }
             waited += Time.unscaledDeltaTime;
             yield return null;
         }
@@ -461,7 +461,7 @@ public class E2ERunner : MonoBehaviour {
             markerGone = MarkerPrefab.FindFor(pid) == null;
             foreach (var t in UnityEngine.Object.FindObjectsOfType<TombStone>()) {
                 var nv = t.GetComponent<ZNetView>();
-                if (nv != null && nv.IsValid() && !new MarkerState(nv).IsMarker) { realTombstone = true; break; }
+                if (nv != null && nv.IsValid() && !new DownedMarkerView(nv).IsMarker) { realTombstone = true; break; }
             }
             if (diedOnReconnect && markerGone) break;
             w += Time.unscaledDeltaTime;
@@ -537,14 +537,14 @@ public class E2ERunner : MonoBehaviour {
 
     private void DumpLeaks(string context) {
         foreach (var zdo in MarkerZdos()) {
-            var marker = new MarkerState(zdo);
+            var marker = new DownedMarkerView(zdo);
             var playerZdo = marker.LinkedPlayer != ZDOID.None ? ZDOMan.instance.GetZDO(marker.LinkedPlayer) : null;
-            bool playerDowned = playerZdo != null && new DownedState(playerZdo).Downed;
+            bool playerDowned = playerZdo != null && new DownedStateMachineView(playerZdo).Downed;
             var instance = ZNetScene.instance.FindInstance(zdo.m_uid);
             Log($"E2E-LEAK[{context}] zdo {zdo.m_uid}: owner={zdo.GetOwner()} mine={zdo.IsOwner()} " +
                 $"ownerRev={zdo.OwnerRevision} dataRev={zdo.DataRevision} " +
                 $"replaced={marker.ReplacedByGrave} playerZdo={(playerZdo != null ? "alive" : "gone")} " +
-                $"playerDowned={playerDowned} playerProg={(playerZdo != null ? new DownedState(playerZdo).ReviveProgress : 0f):F2} " +
+                $"playerDowned={playerDowned} chan={new ReviveChannelDecayingProgressView(zdo).Channeling} anchorSec={new ReviveChannelDecayingProgressView(zdo).AnchorSeconds:F2} " +
                 $"instance={(instance != null ? "yes" : "no")}");
         }
         foreach (var ghost in GhostMarkers()) {
@@ -634,7 +634,7 @@ public class E2ERunner : MonoBehaviour {
             if (!me.IsDowned()) { Record("reviveloop_victim", false, $"cycle {cycle}: revived before expiry could fire"); yield break; }
 
             // Die mid-channel: force the window into the past.
-            var s = new DownedState(me.m_nview);
+            var s = new DownedStateMachineView(me.m_nview);
             s.DownedTime = (float)ZNet.instance.GetTimeSeconds() - Plugin.ReviveWindow - 5f;
             w = 0f;
             while (w < 12f && !me.IsDead()) { me.SetHealth(0f); w += Time.unscaledDeltaTime; yield return null; }
@@ -688,7 +688,7 @@ public class E2ERunner : MonoBehaviour {
                     continue;
                 }
                 var interactable = FindInteractableViaHoverRay(downed, me)
-                    ?? UnityEngine.Object.FindObjectOfType<ReviveInteractable>();
+                    ?? UnityEngine.Object.FindObjectOfType<Revivable>();
                 interactable?.Interact(me, hold: true, alt: false);
                 if (!downed.IsDowned()) overshoot += Time.unscaledDeltaTime; // keep holding past the revive
                 w += Time.unscaledDeltaTime;
@@ -724,7 +724,7 @@ public class E2ERunner : MonoBehaviour {
             float overshoot = 0f;
             while (w < 40f && overshoot < 2.5f) {
                 var interactable = FindInteractableViaHoverRay(downed, me)
-                    ?? UnityEngine.Object.FindObjectOfType<ReviveInteractable>();
+                    ?? UnityEngine.Object.FindObjectOfType<Revivable>();
                 interactable?.Interact(me, hold: true, alt: false);
                 if (downed.IsDead() || !downed.IsDowned()) overshoot += Time.unscaledDeltaTime;
                 w += Time.unscaledDeltaTime;
@@ -753,10 +753,10 @@ public class E2ERunner : MonoBehaviour {
         // downed player, hold position steadily (no per-frame teleport), and have
         // NO ragdoll anywhere.
         var nview = marker.GetComponent<ZNetView>();
-        bool isMarkerFlag = nview != null && nview.IsValid() && new MarkerState(nview).IsMarker;
+        bool isMarkerFlag = nview != null && nview.IsValid() && new DownedMarkerView(nview).IsMarker;
         var dm = marker.GetComponent<DownedMarker>();
         bool green = dm != null && dm.IsGreen();
-        bool hasInteractable = marker.GetComponentInChildren<ReviveInteractable>() != null;
+        bool hasInteractable = marker.GetComponentInChildren<Revivable>() != null;
         bool noTombScript = marker.GetComponent<TombStone>() == null;
 
         float maxPlayerDist = 0f, maxFrameJump = 0f;
@@ -779,7 +779,7 @@ public class E2ERunner : MonoBehaviour {
         bool corpseColliderOff = downed.m_collider == null || !downed.m_collider.enabled;
         // 2) The marker must be REACHABLE by the real hover raycast: cast through
         //    Player.m_interactMask toward the marker; the FIRST hit must resolve
-        //    to the ReviveInteractable, not the invisible player corpse
+        //    to the Revivable, not the invisible player corpse
         //    (FindHoverObject stops at the first hit).
         var me = Player.m_localPlayer;
         bool hoverRayHitsMarker = false, hoverBlockedByCorpse = false, hoverTextOk = false;
@@ -789,9 +789,9 @@ public class E2ERunner : MonoBehaviour {
         System.Array.Sort(hits, (a, b) => a.distance.CompareTo(b.distance));
         if (hits.Length > 0) {
             var first = hits[0].collider;
-            hoverRayHitsMarker = first.GetComponentInParent<ReviveInteractable>() != null;
+            hoverRayHitsMarker = first.GetComponentInParent<Revivable>() != null;
             hoverBlockedByCorpse = first.GetComponentInParent<Player>() == downed;
-            var inter = first.GetComponentInParent<ReviveInteractable>();
+            var inter = first.GetComponentInParent<Revivable>();
             if (inter != null) {
                 var hover = inter.GetHoverText();
                 hoverTextOk = !string.IsNullOrEmpty(hover) && hover.IndexOf("Revive", StringComparison.OrdinalIgnoreCase) >= 0;
@@ -903,6 +903,7 @@ public class E2ERunner : MonoBehaviour {
         yield return StartCoroutine(Test_DownedConstraints());
         yield return StartCoroutine(Test_MarkerColorGradient());
         yield return StartCoroutine(Test_HoldProgressAndUI());
+        yield return StartCoroutine(Test_ReviveNoNetworkTick());
         yield return StartCoroutine(Test_ReviveRestores());
         yield return StartCoroutine(Test_PressModeRevives());
         yield return StartCoroutine(Test_DisconnectDeath());
@@ -937,9 +938,9 @@ public class E2ERunner : MonoBehaviour {
         float maxFrac = 0f;
         bool sawRed = false;
         while (w < 6f && !player.IsDead()) {
-            player.GetComponent<DownedController>()?.SimulateGiveUpHold();
-            maxFrac = Mathf.Max(maxFrac, DownedController.LocalGiveUpFraction);
-            if (ReviveProgressUI.Visible && ReviveProgressUI.GivingUp) sawRed = true;
+            player.GetComponent<GiveUp>()?.SimulateHold();
+            maxFrac = Mathf.Max(maxFrac, GiveUp.LocalFraction);
+            if (ProgressUI.Visible && ProgressUI.GivingUp) sawRed = true;
             w += Time.unscaledDeltaTime;
             yield return null;
         }
@@ -948,7 +949,7 @@ public class E2ERunner : MonoBehaviour {
         bool dead = player.IsDead();
         bool notDowned = !player.IsDowned();
         bool realTombstone = FindRealGraveNear(player.transform.position, 999f) != null;
-        bool fractionReset = DownedController.LocalGiveUpFraction <= 0.01f;
+        bool fractionReset = GiveUp.LocalFraction <= 0.01f;
 
         Record(T, dead && notDowned && sawRed && maxFrac > 0.5f && realTombstone && fractionReset,
             $"dead={dead} notDowned={notDowned} sawRed={sawRed} maxFrac={maxFrac:F2} " +
@@ -963,7 +964,7 @@ public class E2ERunner : MonoBehaviour {
         while (waited < 5f && !player.IsDowned()) { waited += Time.unscaledDeltaTime; yield return null; }
 
         // Drop-in pop: the marker is launched upward at spawn (sampled by
-        // DownedState at the moment the velocity is applied -- reading the
+        // DownedStateMachineView at the moment the velocity is applied -- reading the
         // rigidbody here races against gravity).
         float popVelY = MarkerPrefab.LastPopVelY;
         bool popped = popVelY > 3f;
@@ -972,7 +973,7 @@ public class E2ERunner : MonoBehaviour {
         yield return new WaitForSecondsRealtime(0.5f);
         bool downed = player.IsDowned();
         bool notDead = !player.IsDead();
-        bool hasController = player.GetComponent<DownedController>() != null;
+        bool hasController = player.GetComponent<DownedStateMachine>() != null;
         var marker = player.FindDownedMarker();
         bool markerExists = marker != null;
         // The marker must be an instance of OUR registered prefab (not a
@@ -1007,7 +1008,7 @@ public class E2ERunner : MonoBehaviour {
         // Simulate half the window having elapsed. The gradient clock is the
         // PLAYER's downedTime (single-writer: the marker ZDO belongs to the
         // channeling reviver's progress only).
-        var pstate = new DownedState(player.m_nview);
+        var pstate = new DownedStateMachineView(player.m_nview);
         pstate.DownedTime -= Plugin.ReviveWindow * 0.5f;
         yield return null;
         yield return null;
@@ -1043,7 +1044,7 @@ public class E2ERunner : MonoBehaviour {
 
         // Simulate reconnect: fresh character (no downed ZDO state, full health),
         // orphan marker left behind.
-        var s = new DownedState(player.m_nview);
+        var s = new DownedStateMachineView(player.m_nview);
         s.Downed = false;
         s.Marker = ZDOID.None;
         player.SetHealth(player.GetMaxHealth());
@@ -1052,8 +1053,8 @@ public class E2ERunner : MonoBehaviour {
         if (player.m_visual != null) player.m_visual.SetActive(true);
         yield return null;
 
-        // Run the reconnect check (as DownedController.Start would on spawn).
-        player.GetComponent<DownedController>()!.RunReconnectCheck();
+        // Run the reconnect check (as ReconnectDeathCheck.Start would on spawn).
+        player.GetComponent<ReconnectDeathCheck>()!.RunReconnectCheck();
 
         // Wait for it to find the orphan and kill the player.
         w = 0f;
@@ -1065,7 +1066,7 @@ public class E2ERunner : MonoBehaviour {
         bool realTombstone = false;
         foreach (var t in UnityEngine.Object.FindObjectsOfType<TombStone>()) {
             var nv = t.GetComponent<ZNetView>();
-            if (nv != null && nv.IsValid() && !new MarkerState(nv).IsMarker) { realTombstone = true; break; }
+            if (nv != null && nv.IsValid() && !new DownedMarkerView(nv).IsMarker) { realTombstone = true; break; }
         }
         bool noRagdolls = UnityEngine.Object.FindObjectsOfType<Ragdoll>().Length == 0;
 
@@ -1090,7 +1091,7 @@ public class E2ERunner : MonoBehaviour {
             // behaviour), not the prefab default "GRAVE".
             var worldText = marker.GetComponentInChildren<TMPro.TMP_Text>(true);
             nameOk = worldText != null && worldText.text == player.GetPlayerName();
-            var interactable = marker.GetComponentInChildren<ReviveInteractable>();
+            var interactable = marker.GetComponentInChildren<Revivable>();
             interactableFound = interactable != null;
             var dm = marker.GetComponent<DownedMarker>();
             green = dm != null && dm.IsGreen();
@@ -1124,9 +1125,9 @@ public class E2ERunner : MonoBehaviour {
         var interactable = FindMarkerInteractable(player);
         if (interactable == null) { Record(T, false, "no marker interactable"); yield break; }
 
-        // Channel for a while (well below the 4s hold time). The timer is
-        // peer-authoritative: it lives in the marker's ReviveInteractable on the
-        // channeling client, so progress must respond with no replication lag.
+        // Channel for a while (well below the 4s hold time). Progress is computed
+        // locally from the marker's replicated channel anchor, so it must respond
+        // promptly once RevivingState anchors the channel.
         float remainingBefore = player.GetDownedRemainingTime();
         float t = 0f, maxProg = 0f, maxFill = 0f, firstProgressAt = -1f;
         bool uiSeen = false;
@@ -1135,7 +1136,7 @@ public class E2ERunner : MonoBehaviour {
             var prog = player.GetReviveProgress();
             if (prog > 0.05f && firstProgressAt < 0f) firstProgressAt = t;
             maxProg = Mathf.Max(maxProg, prog);
-            if (ReviveProgressUI.Visible) { uiSeen = true; maxFill = Mathf.Max(maxFill, ReviveProgressUI.Fill); }
+            if (ProgressUI.Visible) { uiSeen = true; maxFill = Mathf.Max(maxFill, ProgressUI.Fill); }
             t += Time.unscaledDeltaTime;
             yield return null;
         }
@@ -1151,13 +1152,57 @@ public class E2ERunner : MonoBehaviour {
         t = 0f;
         while (t < 3f) { t += Time.unscaledDeltaTime; yield return null; }
         bool decayed = player.GetReviveProgress() <= 0.01f;
-        bool uiHidden = !ReviveProgressUI.Visible;
+        bool uiHidden = !ProgressUI.Visible;
 
         Record(T, partial && stillDowned && uiSeen && decayed && uiHidden && windowPaused && responsive,
             $"maxProg={maxProg:F2} partial={partial} stillDowned={stillDowned} uiSeen={uiSeen} " +
             $"maxFill={maxFill:F2} decayed={decayed} uiHidden={uiHidden} " +
             $"windowPaused={windowPaused} remBefore={remainingBefore:F1} remAfter={remainingAfter:F1} " +
             $"responsive={responsive} firstProgressAt={firstProgressAt:F2}");
+    }
+
+    /// <summary>
+    /// Revive must not tick over the network. While a channel is held, progress
+    /// (computed locally from the marker's replicated anchor) keeps rising, yet the
+    /// replicated ANCHOR itself stays constant: the owner writes it only on channel
+    /// start/stop, never per frame. (We check the anchor fields directly rather
+    /// than the ZDO's DataRevision, which also counts the tombstone's position
+    /// sync as it settles.)
+    /// </summary>
+    private IEnumerator Test_ReviveNoNetworkTick() {
+        const string T = "revive_no_network_tick";
+        var player = Player.m_localPlayer;
+        if (!player.IsDowned()) { Record(T, false, "precondition: not downed"); yield break; }
+        var interactable = FindMarkerInteractable(player);
+        var marker = player.FindDownedMarker();
+        var nview = marker != null ? marker.GetComponent<ZNetView>() : null;
+        if (interactable == null || nview == null || !nview.IsValid()) {
+            Record(T, false, "no marker/interactable"); yield break;
+        }
+
+        // Prime the channel so RevivingState anchors it (Begin writes the anchor
+        // once), then snapshot the anchor fields.
+        float t = 0f;
+        while (t < 0.6f) { interactable.SimulateHold(); t += Time.unscaledDeltaTime; yield return null; }
+        var anchor0 = new ReviveChannelDecayingProgressView(nview);
+        float anchorTime0 = anchor0.AnchorTime, anchorSeconds0 = anchor0.AnchorSeconds;
+        float progAtBaseline = player.GetReviveProgress();
+
+        // Keep channeling: progress must keep rising while the anchor stays put.
+        int frames = 0;
+        t = 0f;
+        while (t < 1.5f) { interactable.SimulateHold(); frames++; t += Time.unscaledDeltaTime; yield return null; }
+        var anchor1 = new ReviveChannelDecayingProgressView(nview);
+        float progAfter = player.GetReviveProgress();
+
+        bool progressRose = progAfter > progAtBaseline + 0.1f;
+        bool anchorStable = Mathf.Abs(anchor1.AnchorTime - anchorTime0) < 0.01f
+                            && Mathf.Abs(anchor1.AnchorSeconds - anchorSeconds0) < 0.01f;
+        bool stillDowned = player.IsDowned();
+
+        Record(T, progressRose && anchorStable && stillDowned,
+            $"progressRose={progressRose} ({progAtBaseline:F2}->{progAfter:F2}) " +
+            $"anchorStable={anchorStable} (t {anchorTime0:F2}->{anchor1.AnchorTime:F2}) frames={frames} stillDowned={stillDowned}");
     }
 
     /// <summary>
@@ -1200,7 +1245,7 @@ public class E2ERunner : MonoBehaviour {
         var player = Player.m_localPlayer;
         if (!player.IsDowned()) { Record(T, false, "precondition: not downed"); yield break; }
         var markerBefore = player.FindDownedMarker();
-        int crumblesBefore = MarkerState.CrumbleEvents;
+        int crumblesBefore = DownedMarker.CrumbleEvents;
 
         player.ReviveFromDowned();
         yield return new WaitForSecondsRealtime(0.5f);
@@ -1217,7 +1262,7 @@ public class E2ERunner : MonoBehaviour {
         yield return new WaitForSecondsRealtime(0.5f);
         bool markerGone = markerBefore == null || !markerBefore;
         // The marker must CRUMBLE away (grave despawn effect), not blink out.
-        bool crumbled = MarkerState.CrumbleEvents > crumblesBefore;
+        bool crumbled = DownedMarker.CrumbleEvents > crumblesBefore;
 
         Record(T, notDowned && healthy && canMove && visualBack && collider && notKinematic && markerGone && crumbled,
             $"notDowned={notDowned} hp={player.GetHealth():F0} canMove={canMove} " +
@@ -1243,7 +1288,7 @@ public class E2ERunner : MonoBehaviour {
         Vector3 markerPos = markerBefore != null ? markerBefore.transform.position : Vector3.zero;
 
         // Force the window to have expired.
-        var s = new DownedState(player.m_nview);
+        var s = new DownedStateMachineView(player.m_nview);
         s.DownedTime = (float)ZNet.instance.GetTimeSeconds() - Plugin.ReviveWindow - 5f;
         waited = 0f;
         while (waited < 10f && !player.IsDead()) { player.SetHealth(0f); waited += Time.unscaledDeltaTime; yield return null; }
@@ -1298,7 +1343,7 @@ public class E2ERunner : MonoBehaviour {
         foreach (var t in UnityEngine.Object.FindObjectsOfType<TombStone>()) {
             var nv = t.GetComponent<ZNetView>();
             if (nv == null || !nv.IsValid()) continue;
-            if (nv != null && nv.IsValid() && new MarkerState(nv).IsMarker) continue;
+            if (nv != null && nv.IsValid() && new DownedMarkerView(nv).IsMarker) continue;
             float d = Vector3.Distance(t.transform.position, pos);
             if (d <= bestDist) { bestDist = d; best = t; }
         }
@@ -1328,7 +1373,7 @@ public class E2ERunner : MonoBehaviour {
         Vector3 markerPos = marker.transform.position;
         int gravesBefore = CountRealGraves();
 
-        var s = new DownedState(player.m_nview);
+        var s = new DownedStateMachineView(player.m_nview);
         s.DownedTime = (float)ZNet.instance.GetTimeSeconds() - Plugin.ReviveWindow - 5f;
         w = 0f;
         while (w < 10f && !player.IsDead()) { player.SetHealth(0f); w += Time.unscaledDeltaTime; yield return null; }
@@ -1336,12 +1381,12 @@ public class E2ERunner : MonoBehaviour {
 
         bool dead = player.IsDead();
         bool markerGone = marker == null || !marker;
-        bool crumbled = MarkerState.LastCrumbleEffectCount > 0;
+        bool crumbled = DownedMarker.LastCrumbleEffectCount > 0;
         bool noNewGrave = CountRealGraves() == gravesBefore;
-        bool pendingCleared = !new DownedState(player.m_nview).GraveReplacePending;
+        bool pendingCleared = !new GraveReplaceView(player.m_nview).Pending;
 
         Record(T, dead && markerGone && crumbled && noNewGrave && pendingCleared,
-            $"dead={dead} markerGone={markerGone} crumbleEffects={MarkerState.LastCrumbleEffectCount} " +
+            $"dead={dead} markerGone={markerGone} crumbleEffects={DownedMarker.LastCrumbleEffectCount} " +
             $"noNewGrave={noNewGrave} (before={gravesBefore}) pendingCleared={pendingCleared}");
     }
 
@@ -1350,7 +1395,7 @@ public class E2ERunner : MonoBehaviour {
         foreach (var t in UnityEngine.Object.FindObjectsOfType<TombStone>()) {
             var nv = t.GetComponent<ZNetView>();
             if (nv == null || !nv.IsValid()) continue;
-            if (nv != null && nv.IsValid() && new MarkerState(nv).IsMarker) continue;
+            if (nv != null && nv.IsValid() && new DownedMarkerView(nv).IsMarker) continue;
             n++;
         }
         return n;
@@ -1482,7 +1527,7 @@ public class E2ERunner : MonoBehaviour {
     /// the FIRST hit (Player.FindHoverObject stops at the first hit, so anything
     /// blocking -- like a still-active corpse collider -- makes this return null).
     /// </summary>
-    private static ReviveInteractable? FindInteractableViaHoverRay(Player downed, Player me) {
+    private static Revivable? FindInteractableViaHoverRay(Player downed, Player me) {
         var marker = downed.FindDownedMarker();
         if (marker == null) return null;
         var target = marker.transform.position + Vector3.up * 0.3f;
@@ -1490,13 +1535,13 @@ public class E2ERunner : MonoBehaviour {
         var hits = Physics.RaycastAll(origin, (target - origin).normalized, 6f, me.m_interactMask);
         if (hits.Length == 0) return null;
         System.Array.Sort(hits, (a, b) => a.distance.CompareTo(b.distance));
-        return hits[0].collider.GetComponentInParent<ReviveInteractable>();
+        return hits[0].collider.GetComponentInParent<Revivable>();
     }
 
     /// <summary>Marker interactable for a downed player (single-process tests/demo).</summary>
-    private static ReviveInteractable? FindMarkerInteractable(Player downed) {
+    private static Revivable? FindMarkerInteractable(Player downed) {
         var marker = downed.FindDownedMarker();
-        return marker != null ? marker.GetComponentInChildren<ReviveInteractable>() : null;
+        return marker != null ? marker.GetComponentInChildren<Revivable>() : null;
     }
 
     private static Player? FindDownedRemotePlayer(Player me) {

@@ -5,7 +5,7 @@
     <LangVersion>latest</LangVersion>
     <AssemblyName>ReviveAllies</AssemblyName>
     <RootNamespace>ReviveAllies</RootNamespace>
-    <Version>0.3.1</Version>
+    <Version>0.3.2</Version>
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 
@@ -58,6 +58,10 @@
     </Reference>
     <Reference Include="assembly_utils" Publicize="true">
       <HintPath>$(ManagedDir)/assembly_utils.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="com.rlabrecque.steamworks.net">
+      <HintPath>$(ManagedDir)/com.rlabrecque.steamworks.net.dll</HintPath>
       <Private>false</Private>
     </Reference>
   </ItemGroup>

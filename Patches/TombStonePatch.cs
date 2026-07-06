@@ -23,11 +23,11 @@ static class TombStoneSetupReplacePatch {
         if (player == null || player.m_nview == null || !player.m_nview.IsValid()) return;
         if (ownerUID != player.GetPlayerID()) return;
 
-        var state = player.State();
-        if (!state.GraveReplacePending) return;
-        state.GraveReplacePending = false; // consume
+        var grave = player.GraveReplace();
+        if (!grave.Pending) return;
+        grave.Pending = false; // consume
 
-        var at = state.GraveReplacePos;
+        var at = grave.Pos;
         if (at == Vector3.zero) at = __instance.transform.position; // no recorded spot
         __instance.transform.position = at;
         var body = __instance.GetComponent<Rigidbody>();
@@ -40,7 +40,8 @@ static class TombStoneSetupReplacePatch {
         // that client sees this grave, then its ZDO is destroyed.
         var marker = player.FindDownedMarker()
                      ?? MarkerPrefab.FindFor(player.GetPlayerID()); // reconnect path: orphan, not linked
-        MarkerState.MarkReplaced(marker);
+        DownedMarker.MarkReplaced(marker);
+        var state = player.State();
         state.Marker = ZDOID.None;
     }
 }
@@ -57,14 +58,15 @@ static class PlayerOnDeathMarkerCrumblePatch {
         var nview = __instance.m_nview;
         if (nview == null || !nview.IsValid() || !nview.IsOwner()) return;
 
-        var state = __instance.State();
-        if (!state.GraveReplacePending) return; // grave spawned (consumed), or never downed
-        state.GraveReplacePending = false;
+        var grave = __instance.GraveReplace();
+        if (!grave.Pending) return; // grave spawned (consumed), or never downed
+        grave.Pending = false;
 
         var marker = __instance.FindDownedMarker()
                      ?? MarkerPrefab.FindFor(__instance.GetPlayerID());
+        var state = __instance.State();
         state.Marker = ZDOID.None;
-        MarkerState.Crumble(marker);
+        DownedMarker.Crumble(marker);
         Plugin.Logger.LogInfo($"{__instance.GetPlayerName()} died with no grave to drop; marker crumbled");
     }
 }

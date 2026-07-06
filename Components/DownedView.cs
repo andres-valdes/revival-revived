@@ -8,7 +8,7 @@ namespace ReviveAllies.Components;
 /// collider (so the invisible corpse neither blocks movement nor eats the hover
 /// raycast), freeze the owner's body, play the poof when the player goes down,
 /// and restore everything when the flag clears. No authority, no transitions --
-/// that all lives in <see cref="DownedController"/>.
+/// that all lives in <see cref="DownedStateMachine"/>.
 ///
 /// Because the downed transition is replicated ZDO state, each client plays the
 /// poof itself when it observes the change -- there is no poof RPC.

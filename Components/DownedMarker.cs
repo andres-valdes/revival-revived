@@ -4,19 +4,93 @@ using UnityEngine;
 namespace ReviveAllies.Components;
 
 /// <summary>
-/// The visual behaviour on a revive-marker instance (every client that
-/// instantiates the prefab). It recolours the tombstone's red accent to
-/// revive-green and lerps it back to red as the revive window runs out, shows
-/// the downed player's name, and -- once the real grave has taken its place --
-/// hides itself gap-free and destroys the ZDO.
+/// The revive-marker component (every client that instantiates the prefab). Its
+/// instance side is presentation only: recolour the tombstone's red accent to
+/// revive-green and lerp it back to red as the window runs out, show the downed
+/// player's name, and -- once the real grave has taken its place -- hide itself
+/// gap-free and destroy the ZDO. Its static side is the marker's lifecycle
+/// operations (mark-replaced / crumble / destroy).
 ///
-/// This class is only the presentation. The marker's data is <see cref="MarkerState"/>,
-/// the prefab and spawning are <see cref="MarkerPrefab"/>, and the marker's
-/// lifecycle operations are the statics on <see cref="MarkerState"/>.
+/// The marker's data is <see cref="DownedMarkerView"/>; the prefab and spawning
+/// are <see cref="MarkerPrefab"/>.
 /// </summary>
 public class DownedMarker : MonoBehaviour {
     /// <summary>Revive-window accent colour at full time remaining.</summary>
     public static readonly Color ReviveGreen = new(0.25f, 1f, 0.35f);
+
+    // ---- marker lifecycle operations (statics) -----------------------------
+
+    /// <summary>Effect objects created by the last marker crumble (test hook).</summary>
+    public static int LastCrumbleEffectCount { get; private set; }
+
+    /// <summary>Total crumbles this session (test hook; use deltas across an action).</summary>
+    public static int CrumbleEvents { get; private set; }
+
+    /// <summary>
+    /// The real grave has spawned in this marker's place: flag the marker ZDO so
+    /// every client swaps its presentation locally, gap-free. The instance's
+    /// Update handles hide + delayed destroy.
+    /// </summary>
+    public static void MarkReplaced(GameObject? marker) {
+        var nview = Owned(marker);
+        if (nview == null) return;
+        var m = new DownedMarkerView(nview);
+        m.ReplacedByGrave = true;
+    }
+
+    /// <summary>
+    /// Despawn the marker the way an emptied grave does: play the tombstone's own
+    /// crumble effect (a networked vfx, so it covers the disappearance on every
+    /// client) and destroy it. Used on revive, and on death when no grave spawns.
+    /// </summary>
+    public static void Crumble(GameObject? marker) {
+        if (marker == null) return;
+        var effect = GraveCrumbleEffect();
+        if (effect != null) {
+            var created = effect.Create(marker.transform.position, marker.transform.rotation);
+            LastCrumbleEffectCount = created?.Length ?? 0;
+            CrumbleEvents++;
+        }
+        DestroyMarker(marker);
+    }
+
+    /// <summary>Crumble the marker linked from a player's ZDO and clear the link.</summary>
+    public static void CrumbleLinked(ZNetView playerNview) {
+        var markerId = new DownedStateMachineView(playerNview).Marker;
+        if (markerId == ZDOID.None) return;
+        var state = new DownedStateMachineView(playerNview);
+        state.Marker = ZDOID.None;
+        Crumble(ZNetScene.instance.FindInstance(markerId));
+    }
+
+    /// <summary>Destroy a marker, claiming ownership first (an orphaned marker is owned by the server).</summary>
+    public static void DestroyMarker(GameObject? marker) {
+        var nview = Owned(marker);
+        nview?.Destroy();
+    }
+
+    /// <summary>The marker's ZNetView, ownership claimed, or null if invalid.</summary>
+    private static ZNetView? Owned(GameObject? marker) {
+        var nview = marker != null ? marker.GetComponent<ZNetView>() : null;
+        if (nview == null || !nview.IsValid()) return null;
+        if (!nview.IsOwner()) nview.ClaimOwnership();
+        return nview;
+    }
+
+    private static EffectList? s_crumbleEffect;
+
+    /// <summary>The vanilla tombstone's remove-effect (what plays when an emptied grave despawns).</summary>
+    private static EffectList? GraveCrumbleEffect() {
+        if (s_crumbleEffect != null) return s_crumbleEffect;
+        var prefab = ZNetScene.instance != null ? MarkerPrefab.FindTombstonePrefab(ZNetScene.instance) : null;
+        var tomb = prefab != null ? prefab.GetComponent<TombStone>() : null;
+        if (tomb != null && tomb.m_removeEffect != null && tomb.m_removeEffect.m_effectPrefabs.Length > 0) {
+            s_crumbleEffect = tomb.m_removeEffect;
+        } else {
+            Plugin.Logger.LogWarning("DownedMarker: no grave crumble effect found");
+        }
+        return s_crumbleEffect;
+    }
 
     private static readonly int EmissionColorId = Shader.PropertyToID("_EmissionColor");
     private static readonly int ColorId = Shader.PropertyToID("_Color");
@@ -50,7 +124,7 @@ public class DownedMarker : MonoBehaviour {
         // Show the downed player's name like a vanilla grave would (the ZDO is
         // populated by the time Start runs, on the spawner and on remotes).
         if (m_nview == null || !m_nview.IsValid()) return;
-        var ownerName = new MarkerState(m_nview).OwnerName;
+        var ownerName = new DownedMarkerView(m_nview).OwnerName;
         if (string.IsNullOrEmpty(ownerName)) return;
         var worldText = GetComponentInChildren<TMPro.TMP_Text>(true);
         if (worldText != null) worldText.text = ownerName;
@@ -58,7 +132,7 @@ public class DownedMarker : MonoBehaviour {
 
     private void Update() {
         if (m_nview == null || !m_nview.IsValid()) return;
-        var marker = new MarkerState(m_nview);
+        var marker = new DownedMarkerView(m_nview);
 
         // The real grave took our place: hide once it is visible here, destroy
         // the ZDO after a grace period. No gradient/interaction from here on.
@@ -74,7 +148,7 @@ public class DownedMarker : MonoBehaviour {
         var playerZdoId = marker.LinkedPlayer;
         var playerZdo = playerZdoId != ZDOID.None ? ZDOMan.instance.GetZDO(playerZdoId) : null;
         var downedTime = playerZdo != null
-            ? new DownedState(playerZdo).DownedTime
+            ? new DownedStateMachineView(playerZdo).DownedTime
             : marker.DownedTime;
         var elapsed = (float)ZNet.instance.GetTimeSeconds() - downedTime;
         ApplyBlend(Mathf.Clamp01(elapsed / Plugin.ReviveWindow));
