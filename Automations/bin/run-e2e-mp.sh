@@ -19,6 +19,11 @@ CLI_E2E="/tmp/automations-e2e-client-harness.log"
 PORT="${AUTO_E2E_PORT:-2456}"
 
 rm -f "$HOST_RES" "$CLI_RES" "$HOST_OUT" "$CLI_OUT" "$HOST_E2E" "$CLI_E2E"
+
+# Start from a clean world each run (persistent machines accumulate otherwise).
+WORLDS="$HOME/.config/unity3d/IronGate/Valheim/worlds_local"
+rm -f "$WORLDS"/auto_mp* 2>/dev/null || true
+
 cd "$VALHEIM" || exit 99
 
 export SteamAppId=892970 SteamGameId=892970

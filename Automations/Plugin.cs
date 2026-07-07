@@ -24,15 +24,12 @@ public class Plugin : BaseUnityPlugin {
 
     // --- Simulation tuning ---------------------------------------------------
     private static ConfigEntry<float> TickIntervalCfg = null!;
-    private static ConfigEntry<int> ProduceRateCfg = null!;
     private static ConfigEntry<int> ProcessPerTickCfg = null!;
     private static ConfigEntry<int> TransferPerTickCfg = null!;
 
-    /// <summary>Seconds between a machine's simulation ticks.</summary>
+    /// <summary>Seconds between a machine's pipe tick (and the assembler's craft tick).</summary>
     public static float TickInterval => TickIntervalCfg?.Value ?? 1f;
-    /// <summary>Raw items a Stockpile mints per tick.</summary>
-    public static int ProduceRate => ProduceRateCfg?.Value ?? 3;
-    /// <summary>Recipe batches a processor runs per tick.</summary>
+    /// <summary>Blueprint batches the assembler crafts per tick.</summary>
     public static int ProcessPerTick => ProcessPerTickCfg?.Value ?? 3;
     /// <summary>Items a machine ships down each pipe per tick.</summary>
     public static int TransferPerTick => TransferPerTickCfg?.Value ?? 5;
@@ -50,13 +47,10 @@ public class Plugin : BaseUnityPlugin {
         Logger.LogInfo($"{PluginName} v{PluginVersion} loaded!");
 
         TickIntervalCfg = Config.Bind("Simulation", "TickIntervalSeconds", 1f,
-            new ConfigDescription("Seconds between each machine's produce/process/transfer tick.",
+            new ConfigDescription("Seconds between each machine's pipe transfer tick.",
                 new AcceptableValueRange<float>(0.1f, 10f)));
-        ProduceRateCfg = Config.Bind("Simulation", "ProduceRate", 3,
-            new ConfigDescription("Raw items a Stockpile mints per tick.",
-                new AcceptableValueRange<int>(1, 50)));
         ProcessPerTickCfg = Config.Bind("Simulation", "ProcessPerTick", 3,
-            new ConfigDescription("Recipe batches a processor runs per tick.",
+            new ConfigDescription("Blueprint batches the assembler crafts per tick.",
                 new AcceptableValueRange<int>(1, 50)));
         TransferPerTickCfg = Config.Bind("Simulation", "TransferPerTick", 5,
             new ConfigDescription("Items shipped down each pipe per tick.",

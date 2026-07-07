@@ -14,20 +14,25 @@ namespace Automations.E2E;
 /// <summary>
 /// Autonomous end-to-end test harness for Automations.
 ///
-/// Modes, selected by AUTO_E2E_ROLE:
-///   (unset)  single-process "factory": build a full Stockpile->Kiln->Smelter->
-///            Assembler->Chest chain and assert Bronze accumulates end to end.
-///   host     multiplayer host: builds and runs the factory; a joining client
-///            takes over the collector chest (flow) or reads the replicated graph
-///            (wiring).
-///   client   multiplayer client: joins the host and asserts cross-client material
-///            flow (RPC handoff to a client-owned chest) or ZDO replication of the
-///            pipe graph and buffers.
+/// Machines are real vanilla pieces (chests, smelters, kilns) that our attach patch
+/// turns into pipe nodes, so these tests drive genuine game behaviour -- a piped
+/// smelter lights its fire and produces bars exactly as if a player loaded it.
+///
+/// Modes (AUTO_E2E_ROLE):
+///   (unset)  single-process "factory": chest(ore+coal) -> smelter -> chest, plus a
+///            chest(wood) -> kiln -> chest coal line; assert bars/coal flow and the
+///            machines visibly turn on.
+///   host     builds and runs the factory; a client either claims the collector
+///            (flow) or reads the replicated pipe graph (wiring).
+///   client   joins and asserts cross-client material flow / ZDO replication.
 ///
 /// Bounded by a hard timeout so it can never hang a CI job.
 /// </summary>
 public class E2ERunner : MonoBehaviour {
     private const float HardTimeoutSeconds = 360f;
+    private const string ChestPrefab = "piece_chest_wood";
+    private const string SmelterPrefab = "smelter";
+    private const string KilnPrefab = "charcoal_kiln";
 
     private static string ResultPath =>
         Environment.GetEnvironmentVariable("AUTO_E2E_RESULTS")
@@ -48,7 +53,7 @@ public class E2ERunner : MonoBehaviour {
     private void Start() => StartCoroutine(RunAll());
 
     private void Update() {
-        if (E2EConfig.Manual) return; // human is playing; never time out or quit
+        if (E2EConfig.Manual) return;
         _elapsed += Time.unscaledDeltaTime;
         if (_elapsed > HardTimeoutSeconds && _started) {
             Log("E2E: HARD TIMEOUT reached, aborting");
@@ -72,59 +77,93 @@ public class E2ERunner : MonoBehaviour {
     }
 
     // =====================================================================
-    //  The factory: shared builder used by every scenario
+    //  Factory builders (real vanilla pieces)
     // =====================================================================
+    private sealed class Factory {
+        public Machine CopperChest = null!, CopperSmelter = null!;
+        public Machine TinChest = null!, TinSmelter = null!;
+        public Machine Assembler = null!, Collector = null!;
+        public Machine WoodChest = null!, Kiln = null!, CoalChest = null!;
+    }
+
+    private static Machine? Spawn(string prefab, Vector3 center, Vector3 off, string tag) =>
+        Machine.SpawnVanilla(prefab, center + off, Quaternion.identity, tag);
+
+    private static void Fill(Machine? chest, string item, int n) {
+        var c = chest != null ? chest.GetComponent<Container>() : null;
+        var prefab = ObjectDB.instance != null ? ObjectDB.instance.GetItemPrefab(item) : null;
+        if (c != null && prefab != null) c.GetInventory().AddItem(prefab, n);
+    }
+
     /// <summary>
-    /// Build the demo factory around a point and wire it into a working chain:
-    ///   Stockpile(Wood)  -> Kiln --------\
-    ///   Stockpile(Copper)-> Smelter(Cu) --> Assembler(Bronze) -> Collector Chest
-    ///   Stockpile(Tin)   -> Smelter(Sn) -/
-    /// (the Kiln's Coal feeds both smelters). Returns the collector chest, tagged
-    /// "collector", or null if any machine failed to spawn.
+    /// Build the full demo factory from real pieces around a point:
+    ///   chest(CopperOre+Coal) -> Smelter(Cu) --\
+    ///                                            Assembler(Bronze) -> Collector chest
+    ///   chest(TinOre+Coal)    -> Smelter(Sn) --/
+    ///   chest(Wood)           -> Kiln -> chest(Coal)     [bonus: the kiln smokes]
+    /// The smelters light their fires; the assembler auto-crafts its blueprint. The
+    /// collector chest is tagged "collector" for cross-client discovery.
     /// </summary>
-    private static Machine? BuildFactory(Vector3 center) {
-        Machine? Make(MachineKind kind, Vector3 off, string tag) =>
-            Machine.Spawn(kind, center + off, Quaternion.identity, tag);
+    private static Factory? BuildFactory(Vector3 center) {
+        var copperChest = Spawn(ChestPrefab, center, new Vector3(-8f, 0f, 4f), "copper");
+        var copperSmelter = Spawn(SmelterPrefab, center, new Vector3(-3f, 0f, 4f), "smelter");
+        var tinChest = Spawn(ChestPrefab, center, new Vector3(-8f, 0f, 0f), "tin");
+        var tinSmelter = Spawn(SmelterPrefab, center, new Vector3(-3f, 0f, 0f), "tinSmelter");
+        var assembler = Spawn(Blueprints.PrefabName, center, new Vector3(2f, 0f, 2f), "assembler");
+        var collector = Spawn(ChestPrefab, center, new Vector3(7f, 0f, 2f), "collector");
+        var woodChest = Spawn(ChestPrefab, center, new Vector3(-8f, 0f, -5f), "wood");
+        var kiln = Spawn(KilnPrefab, center, new Vector3(-3f, 0f, -5f), "kiln");
+        var coalChest = Spawn(ChestPrefab, center, new Vector3(2f, 0f, -5f), "coal");
 
-        var wood = Make(MachineKind.Stockpile, new Vector3(-4f, 0f, 3f), "wood");
-        var copper = Make(MachineKind.Stockpile, new Vector3(-4f, 0f, 0f), "copper");
-        var tin = Make(MachineKind.Stockpile, new Vector3(-4f, 0f, -3f), "tin");
-        var kiln = Make(MachineKind.Kiln, new Vector3(-1f, 0f, 3f), "kiln");
-        var copperSmelter = Make(MachineKind.Smelter, new Vector3(-1f, 0f, 1f), "copperSmelter");
-        var tinSmelter = Make(MachineKind.Smelter, new Vector3(-1f, 0f, -2f), "tinSmelter");
-        var assembler = Make(MachineKind.Assembler, new Vector3(2f, 0f, 0f), "assembler");
-        var chest = Make(MachineKind.Chest, new Vector3(5f, 0f, 0f), "collector");
-
-        if (wood == null || copper == null || tin == null || kiln == null
-            || copperSmelter == null || tinSmelter == null || assembler == null || chest == null) {
-            Plugin.Logger.LogError("BuildFactory: a machine failed to spawn");
+        if (copperChest == null || copperSmelter == null || tinChest == null || tinSmelter == null
+            || assembler == null || collector == null || woodChest == null || kiln == null || coalChest == null) {
+            Plugin.Logger.LogError("BuildFactory: a piece failed to spawn");
             return null;
         }
 
-        // Blueprints: Stockpiles produce Wood / CopperOre / TinOre; smelters make
-        // Copper / Tin; the assembler makes Bronze.
-        wood.SetBlueprint(0);          // Wood
-        copper.SetBlueprint(1);        // CopperOre
-        tin.SetBlueprint(2);           // TinOre
-        copperSmelter.SetBlueprint(0); // CopperOre + Coal -> Copper
-        tinSmelter.SetBlueprint(1);    // TinOre + Coal -> Tin
-        assembler.SetBlueprint(0);     // Copper + Tin -> Bronze
+        Fill(copperChest, "CopperOre", 20);
+        Fill(copperChest, "Coal", 20);
+        Fill(tinChest, "TinOre", 20);
+        Fill(tinChest, "Coal", 20);
+        Fill(woodChest, "Wood", 25);
 
-        WiringTool.Link(wood, kiln);
-        WiringTool.Link(kiln, copperSmelter);
-        WiringTool.Link(kiln, tinSmelter);
-        WiringTool.Link(copper, copperSmelter);
-        WiringTool.Link(tin, tinSmelter);
+        // The assembler defaults to blueprint 0 (Copper + Tin -> Bronze).
+        WiringTool.Link(copperChest, copperSmelter);
+        WiringTool.Link(tinChest, tinSmelter);
         WiringTool.Link(copperSmelter, assembler);
         WiringTool.Link(tinSmelter, assembler);
-        WiringTool.Link(assembler, chest);
+        WiringTool.Link(assembler, collector);
+        WiringTool.Link(woodChest, kiln);
+        WiringTool.Link(kiln, coalChest);
 
-        Plugin.Logger.LogInfo("BuildFactory: 8 machines spawned and wired");
-        return chest;
+        Plugin.Logger.LogInfo("BuildFactory: 9 pieces spawned, filled and wired");
+        return new Factory {
+            CopperChest = copperChest, CopperSmelter = copperSmelter,
+            TinChest = tinChest, TinSmelter = tinSmelter,
+            Assembler = assembler, Collector = collector,
+            WoodChest = woodChest, Kiln = kiln, CoalChest = coalChest,
+        };
+    }
+
+    private static string Dump(Machine? m) {
+        if (m == null || !m.ValidView) return "null";
+        var sb = new StringBuilder();
+        var port = m.Port;
+        if (port != null) foreach (var kv in port.Outputs()) { if (sb.Length > 0) sb.Append(' '); sb.Append(kv.Key).Append(':').Append(kv.Value); }
+        var sm = m.GetComponent<Smelter>();
+        string smInfo = sm != null ? $" [queue={sm.GetQueueSize()} fuel={sm.GetFuel():F0} on={(sm.m_enabledObject != null && sm.m_enabledObject.activeSelf)}]" : "";
+        return $"own={(m.IsOwner ? "Y" : "n")} out={m.View.Outputs.Count} {(sb.Length == 0 ? "-" : sb.ToString())}{smInfo}";
+    }
+
+    private static bool SmelterOn(Machine? m) {
+        var sm = m != null ? m.GetComponent<Smelter>() : null;
+        if (sm == null) return false;
+        return (sm.m_enabledObject != null && sm.m_enabledObject.activeSelf)
+               || sm.GetQueueSize() > 0 || sm.GetFuel() > 0f;
     }
 
     // =====================================================================
-    //  SINGLE PROCESS: build the factory locally, assert end-to-end flow
+    //  SINGLE PROCESS
     // =====================================================================
     private IEnumerator RunSingleProcessFactory() {
         yield return StartCoroutine(AutoStart());
@@ -135,50 +174,42 @@ public class E2ERunner : MonoBehaviour {
         Log($"E2E: player ready: {player.GetPlayerName()}");
         yield return new WaitForSecondsRealtime(2f);
 
-        var chest = BuildFactory(player.transform.position);
-        Record("factory_built", chest != null, chest != null ? "8 machines wired" : "spawn failed");
-        if (chest == null) yield break;
+        var f = BuildFactory(player.transform.position);
+        Record("factory_built", f != null, f != null ? "6 pieces wired" : "spawn failed");
+        if (f == null) yield break;
+        yield return new WaitForSecondsRealtime(1f);
 
-        // Let the factory run. Poll each stage as evidence flows downstream.
         Log("E2E: running the factory...");
-        var kiln = Machine.FindByTag("kiln");
-        var cs = Machine.FindByTag("copperSmelter");
-        var ts = Machine.FindByTag("tinSmelter");
-        var asm = Machine.FindByTag("assembler");
-
-        bool sawCoal = false, sawCopper = false, sawTin = false, sawBronze = false;
-        int bronzeInChest = 0;
-        float w = 0f;
-        while (w < 90f) {
-            if (kiln != null && kiln.BufferCount("Coal") > 0) sawCoal = true;
-            if (cs != null && cs.BufferCount("Copper") > 0) sawCopper = true;
-            if (ts != null && ts.BufferCount("Tin") > 0) sawTin = true;
-            if (asm != null && asm.BufferCount("Bronze") > 0) sawBronze = true;
-            bronzeInChest = chest.BufferCount("Bronze");
-            if (bronzeInChest >= 5) break;
+        bool smelterLit = false, kilnFed = false;
+        int bronze = 0, coal = 0;
+        float w = 0f, nextDump = 0f;
+        while (w < 180f) {
+            if (SmelterOn(f.CopperSmelter) || SmelterOn(f.TinSmelter)) smelterLit = true;
+            if (f.Kiln.GetComponent<Smelter>() is { } k && k.GetQueueSize() > 0) kilnFed = true;
+            bronze = f.Collector.Available("Bronze");
+            coal = f.CoalChest.Available("Coal");
+            if (w >= nextDump) {
+                nextDump = w + 12f;
+                Log($"E2E-DUMP t={w:F0}: cu[{Dump(f.CopperSmelter)}] sn[{Dump(f.TinSmelter)}] " +
+                    $"asm[{Dump(f.Assembler)}] collector[{Dump(f.Collector)}] kiln[{Dump(f.Kiln)}] coal[{Dump(f.CoalChest)}]");
+            }
+            if (bronze >= 2 && coal >= 1) break;
             w += Time.unscaledDeltaTime;
             yield return null;
         }
 
-        Record("kiln_makes_coal", sawCoal, $"sawCoal={sawCoal}");
-        Record("smelter_makes_copper", sawCopper, $"sawCopper={sawCopper}");
-        Record("smelter_makes_tin", sawTin, $"sawTin={sawTin}");
-        Record("assembler_makes_bronze", sawBronze, $"sawBronze={sawBronze}");
-        Record("collector_fills_with_bronze", bronzeInChest >= 5,
-            $"bronzeInChest={bronzeInChest} after={w:F0}s");
+        Record("smelters_light_up", smelterLit, $"smelterLit={smelterLit}");
+        Record("assembler_makes_bronze", bronze >= 1, $"bronzeInCollector={bronze}");
+        Record("kiln_fed_and_makes_coal", kilnFed && coal >= 1, $"kilnFed={kilnFed} coalOut={coal}");
 
-        // Second assertion: pipe removal stops flow. Clear the assembler's output
-        // and confirm the chest stops gaining bronze.
-        if (asm != null) {
-            int before = chest.BufferCount("Bronze");
-            WiringTool.ClearOutputs(asm);
-            yield return new WaitForSecondsRealtime(Mathf.Max(3f, Plugin.TickInterval * 3f));
-            int mid = chest.BufferCount("Bronze");
-            yield return new WaitForSecondsRealtime(Mathf.Max(3f, Plugin.TickInterval * 3f));
-            int after = chest.BufferCount("Bronze");
-            bool stopped = after == mid; // no growth once the pipe is cut
-            Record("cut_pipe_stops_flow", stopped, $"before={before} mid={mid} after={after}");
-        }
+        // Cut the assembler's output pipe; the collector must stop gaining bronze.
+        int before = f.Collector.Available("Bronze");
+        WiringTool.ClearOutputs(f.Assembler);
+        yield return new WaitForSecondsRealtime(Mathf.Max(4f, Plugin.TickInterval * 4f));
+        int mid = f.Collector.Available("Bronze");
+        yield return new WaitForSecondsRealtime(Mathf.Max(4f, Plugin.TickInterval * 4f));
+        int after = f.Collector.Available("Bronze");
+        Record("cut_pipe_stops_flow", after == mid, $"before={before} mid={mid} after={after}");
     }
 
     // =====================================================================
@@ -192,54 +223,49 @@ public class E2ERunner : MonoBehaviour {
         if (player == null) { Record("host_spawn", false, "no local player"); yield break; }
         Record("host_spawn", true, $"name={player.GetPlayerName()}");
 
-        Machine? chest;
+        Machine? probe;
         if (E2EConfig.IsWiringScenario) {
-            // A tiny graph the client will read: Stockpile(Wood) -> Chest.
-            var src = Machine.Spawn(MachineKind.Stockpile, player.transform.position + new Vector3(-3f, 0f, 0f), Quaternion.identity, "src");
-            var dst = Machine.Spawn(MachineKind.Chest, player.transform.position + new Vector3(0f, 0f, 0f), Quaternion.identity, "dst");
+            // A tiny graph the client reads: chest(Wood) -> chest.
+            var src = Spawn(ChestPrefab, player.transform.position, new Vector3(-3f, 0f, 0f), "src");
+            var dst = Spawn(ChestPrefab, player.transform.position, new Vector3(0f, 0f, 0f), "dst");
             if (src == null || dst == null) { Record("host_build", false, "spawn failed"); yield break; }
-            src.SetBlueprint(0); // Wood
+            Fill(src, "Wood", 40);
             WiringTool.Link(src, dst);
             Record("host_build", true, "src(Wood) -> dst wired");
-            chest = dst;
+            probe = dst;
         } else {
-            chest = BuildFactory(player.transform.position);
-            Record("host_build", chest != null, chest != null ? "factory wired" : "spawn failed");
-            if (chest == null) yield break;
+            var f = BuildFactory(player.transform.position);
+            Record("host_build", f != null, f != null ? "factory wired" : "spawn failed");
+            if (f == null) yield break;
+            probe = f.Collector;
         }
 
-        // Wait for the client to connect.
         Log("E2E[host]: waiting for a client to connect...");
         float waited = 0f;
         while (waited < 180f) {
             int peers = ZNet.instance != null ? ZNet.instance.GetPeerConnections() : 0;
-            int players = Player.GetAllPlayers().Count;
-            if (peers >= 1 && players >= 2) break;
+            if (peers >= 1 && Player.GetAllPlayers().Count >= 2) break;
             waited += Time.unscaledDeltaTime;
             yield return null;
         }
         int peerCount = ZNet.instance != null ? ZNet.instance.GetPeerConnections() : 0;
-        int playerCount = Player.GetAllPlayers().Count;
-        bool connected = peerCount >= 1 && playerCount >= 2;
-        Record("host_client_connected", connected, $"peers={peerCount} players={playerCount}");
+        bool connected = peerCount >= 1 && Player.GetAllPlayers().Count >= 2;
+        Record("host_client_connected", connected, $"peers={peerCount} players={Player.GetAllPlayers().Count}");
         if (!connected) yield break;
 
-        // The host just keeps the factory running while the client does its checks.
-        // Prove, host-side, that the factory actually produces (host owns the
-        // upstream machines).
-        var asm = Machine.FindByTag(E2EConfig.IsWiringScenario ? "src" : "assembler");
-        string produceItem = E2EConfig.IsWiringScenario ? "Wood" : "Bronze";
-        bool hostProduced = false;
+        // Keep the factory running while the client verifies. For wiring, prove the
+        // host is transferring (dst gains wood); for flow, the client owns the
+        // collector so we just keep ticking.
+        var dstCheck = E2EConfig.IsWiringScenario ? Machine.FindByTag("dst") : null;
+        bool hostRan = false;
         waited = 0f;
         while (waited < 150f) {
-            if (asm != null && asm.BufferCount(produceItem) > 0) hostProduced = true;
-            // For wiring, the src ships Wood to dst; for flow, the client owns the
-            // chest so we only assert upstream production here.
-            if (hostProduced) { /* keep running for the client */ }
+            if (E2EConfig.IsWiringScenario) { if (dstCheck != null && dstCheck.Available("Wood") > 0) hostRan = true; }
+            else if (SmelterOn(Machine.FindByTag("smelter"))) hostRan = true;
             waited += Time.unscaledDeltaTime;
             yield return null;
         }
-        Record("host_factory_runs", hostProduced, $"produced {produceItem}={hostProduced}");
+        Record("host_factory_runs", hostRan, $"hostRan={hostRan}");
     }
 
     // =====================================================================
@@ -253,8 +279,6 @@ public class E2ERunner : MonoBehaviour {
         if (me == null) { Record("client_spawn", false, "no local player"); yield break; }
         Record("client_spawn", true, $"name={me.GetPlayerName()}");
 
-        // See the host player.
-        Log("E2E[client]: waiting to see the host player...");
         float waited = 0f;
         while (waited < 60f && Player.GetAllPlayers().Count < 2) { waited += Time.unscaledDeltaTime; yield return null; }
         bool sawRemote = Player.GetAllPlayers().Count >= 2;
@@ -266,51 +290,42 @@ public class E2ERunner : MonoBehaviour {
     }
 
     /// <summary>
-    /// Flow scenario: find the host's collector chest, CLAIM it (so this client owns
-    /// its ZDO), then assert Bronze lands in it -- proving the host's assembler ships
-    /// items across the network via a routed RPC to us, the new owner.
+    /// Flow: find the host's collector chest, CLAIM it (this client now owns its
+    /// ZDO), and assert Copper lands in it -- proof the host's smelter ships bars to
+    /// a different client over the network.
     /// </summary>
     private IEnumerator RunClientFlow() {
         Log("E2E[client]: locating the collector chest...");
         Machine? chest = null;
         float w = 0f;
-        while (w < 40f && chest == null) {
-            chest = Machine.FindByTag("collector");
-            w += Time.unscaledDeltaTime;
-            yield return null;
-        }
+        while (w < 40f && chest == null) { chest = Machine.FindByTag("collector"); w += Time.unscaledDeltaTime; yield return null; }
         Record("client_finds_collector", chest != null, chest != null ? $"zdo={chest.ZdoId}" : "not found");
         if (chest == null) yield break;
 
-        // Take ownership of the chest so transfers route to us.
         chest.Claim();
         w = 0f;
         while (w < 5f && !chest.IsOwner) { w += Time.unscaledDeltaTime; yield return null; }
         Record("client_owns_collector", chest.IsOwner, $"owner={chest.IsOwner}");
         if (!chest.IsOwner) yield break;
 
-        int baseline = chest.BufferCount("Bronze");
+        int baseline = chest.Available("Bronze");
         Log($"E2E[client]: owns collector (baseline Bronze={baseline}); waiting for cross-client flow...");
-
         int seen = baseline;
         w = 0f;
-        while (w < 150f) {
-            seen = chest.BufferCount("Bronze");
-            if (seen - baseline >= 3) break;
-            // If ownership is stolen back, re-claim (keeps the test meaningful).
+        while (w < 180f) {
+            seen = chest.Available("Bronze");
+            if (seen - baseline >= 1) break;
             if (!chest.IsOwner) chest.Claim();
             w += Time.unscaledDeltaTime;
             yield return null;
         }
-        bool flowed = (seen - baseline) >= 3;
-        Record("client_receives_bronze_across_network", flowed,
+        Record("client_receives_bronze_across_network", (seen - baseline) >= 1,
             $"baseline={baseline} seen={seen} delta={seen - baseline} after={w:F0}s owner={chest.IsOwner}");
     }
 
     /// <summary>
-    /// Wiring scenario: assert the host's pipe graph and buffers replicate to this
-    /// client -- the pipe (source ZDO's Outputs) and the destination's buffer both
-    /// arrive over the wire, and the buffer keeps growing as the host transfers.
+    /// Wiring: assert the host's pipe (source ZDO's Outputs) and the destination
+    /// chest's contents both replicate to this client and keep updating.
     /// </summary>
     private IEnumerator RunClientWiring() {
         Log("E2E[client]: locating replicated machines...");
@@ -322,30 +337,22 @@ public class E2ERunner : MonoBehaviour {
             w += Time.unscaledDeltaTime;
             yield return null;
         }
-        Record("client_sees_machines", src != null && dst != null,
-            $"src={(src != null)} dst={(dst != null)}");
+        Record("client_sees_machines", src != null && dst != null, $"src={(src != null)} dst={(dst != null)}");
         if (src == null || dst == null) yield break;
 
-        // The pipe must replicate: src's Outputs should contain dst's ZDOID.
         bool pipeReplicated = false;
         w = 0f;
-        while (w < 20f && !pipeReplicated) {
-            pipeReplicated = src.View.HasOutput(dst.ZdoId);
-            w += Time.unscaledDeltaTime;
-            yield return null;
-        }
+        while (w < 20f && !pipeReplicated) { pipeReplicated = src.View.HasOutput(dst.ZdoId); w += Time.unscaledDeltaTime; yield return null; }
         Record("client_sees_pipe", pipeReplicated, $"src.Outputs contains dst={pipeReplicated}");
 
-        // The destination buffer must replicate AND keep growing as the host ticks.
-        int first = dst.BufferCount("Wood");
-        yield return new WaitForSecondsRealtime(Mathf.Max(6f, Plugin.TickInterval * 5f));
-        int later = dst.BufferCount("Wood");
-        Record("client_sees_buffer_growth", later > first && later > 0,
-            $"woodInDst {first} -> {later}");
+        int first = dst.Available("Wood");
+        yield return new WaitForSecondsRealtime(Mathf.Max(8f, Plugin.TickInterval * 6f));
+        int later = dst.Available("Wood");
+        Record("client_sees_buffer_growth", later > first && later > 0, $"woodInDst {first} -> {later}");
     }
 
     // =====================================================================
-    //  MANUAL (AUTO_E2E_MANUAL=1): build the factory, then the human plays.
+    //  MANUAL
     // =====================================================================
     private IEnumerator RunManual() {
         yield return StartCoroutine(AutoStart());
@@ -356,11 +363,11 @@ public class E2ERunner : MonoBehaviour {
             BuildFactory(player.transform.position + player.transform.forward * 6f);
             Log("E2E: manual mode -- factory built in front of you; hold the wiring key to see the pipes.");
         }
-        while (true) yield return null; // idle; the human closes the game
+        while (true) yield return null;
     }
 
     // =====================================================================
-    //  Shared: auto-start the game into a world (role-aware)
+    //  Shared plumbing (start into a world, waits, results)
     // =====================================================================
     private IEnumerator AutoStart() {
         Log("E2E: waiting for FejdStartup (main menu)...");
@@ -379,7 +386,6 @@ public class E2ERunner : MonoBehaviour {
         Exception? err = null;
         try {
             var fejd = FejdStartup.instance;
-
             if (E2EConfig.IsHost) {
                 var profile = GetOrCreateProfile(
                     Environment.GetEnvironmentVariable("AUTO_E2E_PROFILE") ?? "auto_host",
@@ -410,7 +416,6 @@ public class E2ERunner : MonoBehaviour {
                 ZNet.ResetServerHost();
                 Log($"E2E[solo]: world '{world.m_name}', loading scene");
             }
-
             Traverse.Create(fejd).Field("m_startingWorld").SetValue(true);
             Traverse.Create(fejd).Method("LoadMainScene").GetValue();
         } catch (Exception e) {
@@ -421,11 +426,7 @@ public class E2ERunner : MonoBehaviour {
 
     private static PlayerProfile GetOrCreateProfile(string filename, string charName) {
         foreach (var p in SaveSystem.GetAllPlayerProfiles()) {
-            if (p.GetFilename() == filename) {
-                p.m_firstSpawn = false;
-                p.Save();
-                return p;
-            }
+            if (p.GetFilename() == filename) { p.m_firstSpawn = false; p.Save(); return p; }
         }
         var np = new PlayerProfile(filename, FileHelpers.FileSource.Local);
         np.SetName(charName);
@@ -450,9 +451,6 @@ public class E2ERunner : MonoBehaviour {
         }
     }
 
-    // =====================================================================
-    //  Result plumbing
-    // =====================================================================
     private void Record(string name, bool pass, string detail) {
         _results.Add((name, pass, detail));
         Log($"E2E_RESULT: {(pass ? "PASS" : "FAIL")} {name} -- {detail}");

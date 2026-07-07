@@ -9,6 +9,12 @@ RESULTS="$VALHEIM/BepInEx/auto-e2e-results.txt"
 RUN_LOG="${AUTO_E2E_RUNLOG:-/tmp/automations-e2e-stdout.log}"
 
 rm -f "$RESULTS" "$RUN_LOG"
+
+# Start from a clean world each run: machines are persistent ZDOs, so a reused
+# world accumulates every prior run's factory and corrupts the test.
+WORLDS="$HOME/.config/unity3d/IronGate/Valheim/worlds_local"
+rm -f "$WORLDS"/auto_world* 2>/dev/null || true
+
 cd "$VALHEIM" || exit 99
 
 export AUTO_E2E=1

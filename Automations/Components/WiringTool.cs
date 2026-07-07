@@ -30,11 +30,11 @@ public static class WiringTool {
         var pending = PendingSource;
         if (pending == null || pending == m) {
             s_source = m;
-            return $"Pipe start: {m.Def.DisplayName}";
+            return $"Pipe start: {m.DisplayName}";
         }
         s_source = null;
         return Link(pending, m)
-            ? $"Piped {pending.Def.DisplayName} -> {m.Def.DisplayName}"
+            ? $"Piped {pending.DisplayName} -> {m.DisplayName}"
             : "Cannot pipe those machines";
     }
 
@@ -45,7 +45,7 @@ public static class WiringTool {
         source.Claim();
         var view = source.View;
         view.AddOutput(dst.ZdoId);
-        Plugin.Logger.LogInfo($"Wired {source.Def.DisplayName}({source.ZdoId}) -> {dst.Def.DisplayName}({dst.ZdoId})");
+        Plugin.Logger.LogInfo($"Wired {source.DisplayName}({source.ZdoId}) -> {dst.DisplayName}({dst.ZdoId})");
         return true;
     }
 

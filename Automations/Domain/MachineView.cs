@@ -4,20 +4,22 @@ using System.Text;
 namespace Automations.Domain;
 
 /// <summary>
-/// The fields on a machine's ZDO, as one typed view -- the single description of
-/// that ZDO's shape and the whole authoritative state of a machine. Everything a
-/// machine "is" at runtime (its kind, selected blueprint, buffered items, and the
-/// pipes leaving it) lives here and replicates for free; the MonoBehaviour
-/// (<see cref="Components.Machine"/>) only ticks it.
+/// The pipe-layer state stored on a machine's ZDO -- the fields Automations adds on
+/// top of whatever vanilla piece it is attached to. This is just the graph: the
+/// directional pipes leaving this machine, a discovery tag, and a small "capture"
+/// buffer used by ports whose underlying vanilla component spits items out as
+/// world drops (the smelter), holding them until a pipe ships them.
 ///
-/// The owner is the sole writer (Valheim ZDO rule): mutators assume the caller has
-/// already checked <c>nview.IsOwner()</c>. Reads are valid on any peer.
+/// The machine's REAL contents (a chest's inventory, a smelter's ore/fuel queue)
+/// live on the vanilla component and are reached through its <see cref="IMachinePort"/>,
+/// not here. The owner is the sole writer.
 /// </summary>
 public struct MachineView {
-    private static readonly int kBlueprint = (MachineCatalog.Prefix + "blueprint").GetStableHashCode();
-    private static readonly int kBuffer = (MachineCatalog.Prefix + "buffer").GetStableHashCode();
-    private static readonly int kOutputs = (MachineCatalog.Prefix + "outputs").GetStableHashCode();
-    private static readonly int kTag = (MachineCatalog.Prefix + "tag").GetStableHashCode();
+    public const string Prefix = "Automations_";
+
+    private static readonly int kOutputs = (Prefix + "outputs").GetStableHashCode();
+    private static readonly int kTag = (Prefix + "tag").GetStableHashCode();
+    private static readonly int kCapture = (Prefix + "capture").GetStableHashCode();
 
     private readonly ZDO _z;
     public MachineView(ZNetView nview) : this(nview.GetZDO()) { }
@@ -25,60 +27,10 @@ public struct MachineView {
 
     public bool Valid => _z != null;
 
-    // ------------------------------------------------------------------ identity
-    /// <summary>
-    /// This machine's definition, derived from its prefab hash -- authoritative and
-    /// available immediately (no owner write required), so it is correct even for a
-    /// machine placed with the build hammer. Falls back to Stockpile if, somehow,
-    /// the prefab is unknown.
-    /// </summary>
-    public MachineDef Def => MachineCatalog.ForPrefabHash(_z.GetPrefab()) ?? MachineCatalog.Stockpile;
-
-    public MachineKind Kind => Def.Kind;
-
-    /// <summary>Selected blueprint index (recipe for a processor, raw item for a Stockpile).</summary>
-    public int Blueprint {
-        get => _z.GetInt(kBlueprint);
-        set => _z.Set(kBlueprint, value);
-    }
-
-    /// <summary>Free-form label -- used by tests to find a specific machine (e.g. the collector).</summary>
+    /// <summary>Free-form label -- used by the E2E harness to find a specific machine.</summary>
     public string Tag {
         get => _z.GetString(kTag);
         set => _z.Set(kTag, value);
-    }
-
-    // -------------------------------------------------------------------- buffer
-    public Dictionary<string, int> ReadBuffer() => ItemBuffer.Parse(_z.GetString(kBuffer));
-    public void WriteBuffer(Dictionary<string, int> map) => _z.Set(kBuffer, ItemBuffer.Format(map));
-
-    public int Count(string item) => ReadBuffer().TryGetValue(item, out var n) ? n : 0;
-    public int TotalCount() => ItemBuffer.TotalCount(ReadBuffer());
-
-    /// <summary>Room left for a given item under the def's per-item capacity.</summary>
-    public int FreeSpace(string item, int capacity) => System.Math.Max(0, capacity - Count(item));
-
-    /// <summary>Owner-only: add items, clamped to capacity. Returns the amount actually added.</summary>
-    public int Add(string item, int qty, int capacity) {
-        if (qty <= 0) return 0;
-        var map = ReadBuffer();
-        int have = map.TryGetValue(item, out var n) ? n : 0;
-        int room = System.Math.Max(0, capacity - have);
-        int added = System.Math.Min(room, qty);
-        if (added > 0) { map[item] = have + added; WriteBuffer(map); }
-        return added;
-    }
-
-    /// <summary>Owner-only: remove items. Returns the amount actually removed.</summary>
-    public int Remove(string item, int qty) {
-        if (qty <= 0) return 0;
-        var map = ReadBuffer();
-        if (!map.TryGetValue(item, out var have) || have <= 0) return 0;
-        int removed = System.Math.Min(have, qty);
-        int left = have - removed;
-        if (left > 0) map[item] = left; else map.Remove(item);
-        WriteBuffer(map);
-        return removed;
     }
 
     // ------------------------------------------------------------- pipes (outputs)
@@ -107,6 +59,12 @@ public struct MachineView {
         if (list.RemoveAll(id => id == target) > 0) Outputs = list;
     }
 
+    // ----------------------------------------------------------- capture buffer
+    /// <summary>Items produced by the vanilla component and held for shipment (owner-written).</summary>
+    public Dictionary<string, int> ReadCapture() => ItemBuffer.Parse(_z.GetString(kCapture));
+    public void WriteCapture(Dictionary<string, int> map) => _z.Set(kCapture, ItemBuffer.Format(map));
+
+    // ------------------------------------------------------------------ encoding
     private static string EncodeIds(List<ZDOID> ids) {
         var sb = new StringBuilder();
         foreach (var id in ids) {
