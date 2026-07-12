@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.3
+
+- Fixed client-to-client revives failing to build progress when both players
+  were connected through a host or dedicated server.
+- Made held revive input more tolerant of frame hitches.
+
 ## 0.3.2
 
 - Fixed a bug where enemies would continue to aggro downed players.

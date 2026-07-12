@@ -16,7 +16,7 @@ namespace ReviveAllies.Components;
 /// </summary>
 public class ReviveRequest : MonoBehaviour {
     /// <summary>How long after the last interact frame we still count as channeling (vanilla hold-interact has no release event).</summary>
-    private const float RequestTimeout = 0.25f;
+    private const float RequestTimeout = 0.5f;
 
     private Player? m_target;
     private float m_lastRequest = -999f;
@@ -36,12 +36,18 @@ public class ReviveRequest : MonoBehaviour {
 
     /// <summary>Tell the victim's owner we started channeling (one edge).</summary>
     public void SendBegin() {
-        if (m_target != null && m_target.m_nview.IsValid()) m_target.m_nview.InvokeRPC(DownedKeys.RpcChannel, true);
+        SendChannelEdge(true);
     }
 
     /// <summary>Tell the victim's owner we stopped channeling (one edge).</summary>
     public void SendEnd() {
-        if (m_target != null && m_target.m_nview.IsValid()) m_target.m_nview.InvokeRPC(DownedKeys.RpcChannel, false);
+        SendChannelEdge(false);
+    }
+
+    private void SendChannelEdge(bool channeling) {
+        var nview = GetComponent<ZNetView>();
+        if (m_target == null || !m_target.m_nview.IsValid() || !nview.IsValid()) return;
+        m_target.m_nview.InvokeRPC(DownedKeys.RpcChannel, channeling, nview.GetZDO().m_uid);
     }
 
     /// <summary>

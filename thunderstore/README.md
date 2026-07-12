@@ -2,6 +2,8 @@
 
 When your friends die, they drop a green tombstone instead, where you can revive them until the revive window expires.
 
+Demo: https://www.youtube.com/watch?v=fPNwjQ-ROEA
+
 ## USAGE
 
 - Your friends hold their "Use" key (E) on the marker to revive you (4 seconds by default; there is a single-press mode in the config).
