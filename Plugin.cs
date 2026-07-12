@@ -17,7 +17,7 @@ public enum ReviveModeType {
 public class Plugin : BaseUnityPlugin {
     public const string PluginGuid = "com.andres.reviveallies";
     public const string PluginName = "ReviveAllies";
-    public const string PluginVersion = "0.3.3";
+    public const string PluginVersion = "0.3.4";
 
     internal static new ManualLogSource Logger { get; private set; } = null!;
 

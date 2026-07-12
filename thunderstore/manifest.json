@@ -1,6 +1,6 @@
 {
     "name": "ReviveAllies",
-    "version_number": "0.3.3",
+    "version_number": "0.3.4",
     "website_url": "https://github.com/andres-valdes/revival-revived",
     "description": "Revive your dead friends at their tombstone within a configurable revive window.",
     "dependencies": [

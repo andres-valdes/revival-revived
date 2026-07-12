@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.3
+## 0.3.4
 
 - Fixed client-to-client revives failing to build progress when both players
   were connected through a host or dedicated server.
